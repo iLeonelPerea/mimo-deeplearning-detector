@@ -545,8 +545,8 @@ Este trabajo se basa en la investigación original del equipo de la UASLP y cont
 
 ---
 
-**Última Actualización:** Enero 2025
-**Versión:** 2.1.0
+**Última Actualización:** Noviembre 2025
+**Versión:** 1.0.0
 **Estado:** Activo y mantenido
 
 ---
