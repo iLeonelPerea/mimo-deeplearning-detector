@@ -48,7 +48,6 @@ env/
 virtualenv/
 
 # PyTorch Models (archivos grandes de modelos entrenados)
-*.pth
 *.pt
 *.ckpt
 
