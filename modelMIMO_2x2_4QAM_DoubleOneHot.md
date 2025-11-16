@@ -2,7 +2,19 @@
 
 ## Overview
 
-This notebook trains a Deep Learning-based MIMO detector using **one-hot encoding per antenna** strategy (also called "double one-hot"). This approach provides a **balanced trade-off** between the high accuracy of one-hot encoding and the efficiency of label encoding.
+This document describes a Deep Learning-based MIMO detector using **one-hot encoding per antenna** strategy (also called "double one-hot"). This approach provides a **balanced trade-off** between the high accuracy of one-hot encoding and the efficiency of label encoding.
+
+### Context
+
+**Implementation Approach**: This is a Deep Learning implementation using gradient-based optimization (backpropagation through all layers) as part of a comparative study with the ELM (Extreme Learning Machine) approach proposed in:
+
+> Ibarra-Hernández, R.F. et al. (2025). "Extreme Learning Machine Signal Detection for MIMO Channels." *IEEE LatinCom 2025*.
+
+**Key Difference**:
+- **Reference (ELM)**: Random fixed input weights + pseudoinverse-based output training
+- **This Work (Deep Learning)**: All weights learned via gradient descent with full backpropagation
+
+Both approaches use the same network architecture (2-layer, 100 hidden units) for fair comparison. See `ELM_vs_DeepLearning_Resultados.md` for detailed comparative analysis.
 
 ## Key Concept: Separate One-Hot Per Antenna
 
@@ -396,10 +408,18 @@ GPLv2 License
 
 ## Authors
 
-- Roilhi Frajo Ibarra Hernández (roilhi.ibarra@uaslp.mx)
-- Francisco Rubén Castillo-Soria (ruben.soria@uaslp.mx)
+### Implementation (Deep Learning Approach)
+- **Leonel Roberto Perea Trejo** - iticleonel.leonel@gmail.com
+- **Implementation**: Python/PyTorch with full backpropagation training
+- **Date**: January 2025
+
+### Reference Work (Original ELM Approach)
+- **Roilhi Frajo Ibarra Hernández** - roilhi.ibarra@uaslp.mx
+- **Francisco Rubén Castillo-Soria** - ruben.soria@uaslp.mx
+- **Affiliation**: Universidad Autónoma de San Luis Potosí (UASLP)
+- **Method**: Extreme Learning Machine with pseudoinverse training
 
 ---
 
-**Last Updated**: 2025
-**Version**: 1.0.0
+**Last Updated**: January 2025
+**Version**: 2.0.0 (Deep Learning Implementation)

@@ -2,7 +2,19 @@
 
 ## Overview
 
-This notebook implements a **Deep Learning-based detector** for a **2×2 MIMO (Multiple-Input Multiple-Output)** communication system using a **one-hot encoding** labeling strategy. The detector leverages a neural network to perform symbol detection in the presence of Rayleigh fading channels and additive white Gaussian noise (AWGN).
+This document describes a **Deep Learning-based detector** for a **2×2 MIMO (Multiple-Input Multiple-Output)** communication system using a **one-hot encoding** labeling strategy. The detector uses a neural network with full backpropagation training to perform symbol detection in the presence of Rayleigh fading channels and additive white Gaussian noise (AWGN).
+
+### Context
+
+**Implementation Approach**: This is a Deep Learning implementation using gradient-based optimization (backpropagation through all layers) as part of a comparative study with the ELM (Extreme Learning Machine) approach proposed in:
+
+> Ibarra-Hernández, R.F. et al. (2024). "Efficient Deep Learning-Based Detection Scheme for MIMO Communication System." *Sensors (MDPI)*.
+
+**Key Difference**:
+- **Reference (ELM)**: Random fixed input weights + pseudoinverse-based output training
+- **This Work (Deep Learning)**: All weights learned via gradient descent with full backpropagation
+
+Both approaches use the same network architecture (2-layer, 100 hidden units) for fair comparison. See `ELM_vs_DeepLearning_Resultados.md` for detailed comparative analysis.
 
 ## Table of Contents
 
@@ -648,10 +660,16 @@ If you use this code for research that results in publications, please cite:
 
 ## Authors
 
+### Implementation (Deep Learning Approach)
+- **Leonel Roberto Perea Trejo** - iticleonel.leonel@gmail.com
+- **Implementation**: Python/PyTorch with full backpropagation training
+- **Date**: January 2025
+
+### Reference Work (Original ELM Approach)
 - **Roilhi Frajo Ibarra Hernández** - roilhi.ibarra@uaslp.mx
 - **Francisco Rubén Castillo-Soria** - ruben.soria@uaslp.mx
-
-**Affiliation**: Universidad Autónoma de San Luis Potosí (UASLP)
+- **Affiliation**: Universidad Autónoma de San Luis Potosí (UASLP)
+- **Method**: Extreme Learning Machine with pseudoinverse training
 
 ---
 
