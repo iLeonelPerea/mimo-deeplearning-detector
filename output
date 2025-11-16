@@ -1,0 +1,128 @@
+(venv) PS C:\Users\Public\tarea 4>  python .\ber_4qam_mimo_2x2_all.py
+PyTorch version: 2.7.1+cu118
+Device: cuda
+GPU: NVIDIA GeForce RTX 4090
+======================================================================
+BER Simulation Configuration
+======================================================================
+MIMO Configuration: 2x2
+Modulation: 4-QAM
+Bits per symbol: 2
+Total bits per transmission: 4 bits
+SNR range: 0 to 25 dB
+Monte Carlo iterations: 1,000,000
+Total simulations: 26,000,000
+======================================================================
+Normalized 4-QAM Constellation:
+  Symbol 0: +0.7071 -0.7071j
+  Symbol 1: -0.7071 -0.7071j
+  Symbol 2: +0.7071 +0.7071j
+  Symbol 3: -0.7071 +0.7071j
+
+Total symbol combinations: 16
+Shape: torch.Size([16, 2])
+
+Sign-based encoding matrix shape: torch.Size([16, 4])
+MIMO Detector architecture defined successfully.
+======================================================================
+Loading Pre-trained Models
+======================================================================
+[OK] Model 1 (One-Hot Encoding): Loaded successfully
+  - Output size: 16
+  - Test accuracy: 0.8210
+[OK] Model 2 (Label Encoding): Loaded successfully
+  - Output size: 4
+  - Test accuracy: 0.8225
+[OK] Model 3 (One-Hot Per Antenna): Loaded successfully
+  - Output size: 8
+  - Test accuracy: 0.7875
+======================================================================
+
+Available models for BER evaluation: 3/3
+  Symbol 3: -0.7071 +0.7071j
+
+Total symbol combinations: 16
+Shape: torch.Size([16, 2])
+
+Sign-based encoding matrix shape: torch.Size([16, 4])
+MIMO Detector architecture defined successfully.
+======================================================================
+Loading Pre-trained Models
+======================================================================
+[OK] Model 1 (One-Hot Encoding): Loaded successfully
+  - Output size: 16
+  - Test accuracy: 0.8210
+[OK] Model 2 (Label Encoding): Loaded successfully
+  - Output size: 4
+  - Test accuracy: 0.8225
+[OK] Model 3 (One-Hot Per Antenna): Loaded successfully
+  - Output size: 8
+  - Test accuracy: 0.7875
+======================================================================
+
+Available models for BER evaluation: 3/3
+Detection functions defined successfully.
+Bit error counting test:
+  Errors between index 0 and 1: 1
+  Errors between index 0 and 15: 4
+  Errors between index 0 and 0: 0
+======================================================================
+Starting BER Simulation
+======================================================================
+Transmitted symbol: tensor([0.5000-0.5000j, 0.5000-0.5000j])
+Total iterations per SNR: 1,000,000
+Total SNR points: 26
+Estimated simulation time: ~2600.0 seconds
+======================================================================
+
+SNR Progress: 100%|██████████████████████████████████████████████| 26/26 [7:06:32<00:00, 984.33s/it]
+
+======================================================================
+BER Simulation Complete!
+======================================================================
+
+====================================================================================================
+BER Results Summary
+====================================================================================================
+SNR (dB)   ML Detector     One-Hot         Label Encoder   OH Per Antenna
+====================================================================================================
+0          2.205497e-01    2.670485e-01    2.843412e-01    2.342307e-01
+5          2.934750e-02    7.026300e-02    8.522900e-02    5.611300e-02
+10         5.265000e-04    8.134000e-03    1.052325e-02    6.666500e-03
+15         5.250000e-06    7.900000e-04    1.025750e-03    6.820000e-04
+20         0.000000e+00    7.950000e-05    1.072500e-04    6.800000e-05
+25         0.000000e+00    9.500000e-06    1.075000e-05    8.750000e-06
+====================================================================================================
+
+Figure saved as: BER_MIMO_2x2_All_Strategies.png
+
+======================================================================
+Performance Analysis: SNR Required for Target BER
+======================================================================
+
+Target BER: 1e-02
+----------------------------------------------------------------------
+  ML Detector:               7.0 dB
+  One-Hot Encoding:         10.0 dB
+  Label Encoder:            11.0 dB
+  One-Hot Per Antenna:      10.0 dB
+
+Target BER: 1e-03
+----------------------------------------------------------------------
+  ML Detector:              10.0 dB
+  One-Hot Encoding:         15.0 dB
+  Label Encoder:            16.0 dB
+  One-Hot Per Antenna:      15.0 dB
+
+Target BER: 1e-04
+----------------------------------------------------------------------
+  ML Detector:              12.0 dB
+  One-Hot Encoding:         20.0 dB
+  Label Encoder:            21.0 dB
+  One-Hot Per Antenna:      20.0 dB
+
+======================================================================
+Results saved to:
+  - BER_results_MIMO_2x2_all_strategies.npy
+  - BER_results_MIMO_2x2_all_strategies.txt
+  - BER_MIMO_2x2_All_Strategies.png

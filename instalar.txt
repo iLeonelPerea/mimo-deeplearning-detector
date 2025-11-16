@@ -1,0 +1,11 @@
+# 1. Verifica qué versión de CUDA tienes instalada en tu sistema
+nvidia-smi
+
+# 2. Desinstala PyTorch actual
+pip3 uninstall torch torchvision torchaudio
+
+# 3. Instala PyTorch con CUDA 12.1 (recomendado para RTX 4090)
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# 4. Verifica que CUDA esté disponible
+python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
