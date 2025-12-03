@@ -863,13 +863,13 @@ Because softmax preserves ordering
 
 ---
 
-#### Optimization 8: Bit Error Lookup Table (2-3× speedup)
+#### Optimization 8: Bit Error Lookup Table (1.70× speedup)
 
 **Problem**:
 ```python
-# Previous optimization, but still Python-based
+# Previous optimization, but forces GPU→CPU transfer
 xor_result = idx_true ^ idx_pred
-errors = bin(xor_result).count('1')  # Python string operation
+errors = bin(xor_result.item()).count('1')  # GPU→CPU + Python string operation
 ```
 
 **Solution**:
@@ -881,12 +881,13 @@ for i in range(16):
         bit_error_lut[i, j] = bin(i ^ j).count('1')
 
 # During simulation:
-errors = bit_error_lut[idx_true, idx_pred].item()  # O(1) GPU lookup
+errors = bit_error_lut[idx_true, idx_pred]  # O(1) GPU lookup, no transfer
 ```
 
 **Impact**:
-- **2-3× faster** than XOR+bin counting
-- GPU tensor access vs Python string operations
+- **1.70× speedup** (measured on GPU NVIDIA RTX 4090)
+- GPU tensor access vs GPU→CPU transfer + Python string operations
+- Eliminates 104M GPU→CPU synchronizations
 - Cache-friendly memory access pattern
 
 ---

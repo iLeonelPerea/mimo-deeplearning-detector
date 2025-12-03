@@ -1,0 +1,160 @@
+================================================================================
+RESULTADOS DE BENCHMARK - OPTIMIZACIONES MIMO 2x2 4-QAM
+================================================================================
+
+CONFIGURACIÓN:
+  - Iteraciones por SNR: 1,000,000
+  - Puntos SNR: 26
+  - Total iteraciones: 26,000,000
+  - GPU: NVIDIA GeForce RTX 4090
+
+================================================================================
+FASE 1: BENCHMARK INDIVIDUAL
+================================================================================
+
+OPTIMIZACIÓN: Pre-cómputo Pseudoinversa
+  Baseline:   0.340396 ms
+  Optimizado: 0.010721 ms
+  Speedup:    31.75×
+  Llamadas por iteración: 1
+
+OPTIMIZACIÓN: Eliminar CPU↔GPU
+  Baseline:   0.245632 ms
+  Optimizado: 0.172025 ms
+  Speedup:    1.43×
+  Llamadas por iteración: 4
+
+OPTIMIZACIÓN: Pre-cómputo Productos ML
+  Baseline:   0.232839 ms
+  Optimizado: 0.210384 ms
+  Speedup:    1.11×
+  Llamadas por iteración: 1
+
+OPTIMIZACIÓN: Pre-cómputo √SNR
+  Baseline:   0.125165 ms
+  Optimizado: 0.119698 ms
+  Speedup:    1.05×
+  Llamadas por iteración: 2
+
+OPTIMIZACIÓN: XOR Bitwise
+  Baseline:   0.002917 ms
+  Optimizado: 0.002290 ms
+  Speedup:    1.27×
+  Llamadas por iteración: 4
+
+OPTIMIZACIÓN: Ruido Complejo Directo
+  Baseline:   0.089547 ms
+  Optimizado: 0.052756 ms
+  Speedup:    1.70×
+  Llamadas por iteración: 1
+
+OPTIMIZACIÓN: Skip Softmax
+  Baseline:   0.152015 ms
+  Optimizado: 0.131130 ms
+  Speedup:    1.16×
+  Llamadas por iteración: 1
+
+OPTIMIZACIÓN: Lookup Table Errores de Bit
+  Baseline:   0.093731 ms
+  Optimizado: 0.058162 ms
+  Speedup:    1.61×
+  Llamadas por iteración: 4
+
+================================================================================
+FASE 2: EXTRAPOLACIÓN A SIMULACIÓN COMPLETA
+================================================================================
+
+Pre-cómputo Pseudoinversa:
+  Llamadas totales: 26,000,000
+  Tiempo baseline:  8,850.31 seg (2.46 h)
+  Tiempo optimizado: 278.74 seg (0.08 h)
+  Tiempo ahorrado:   8,571.56 seg (2.38 h)
+  Speedup: 31.75×
+
+Eliminar CPU↔GPU:
+  Llamadas totales: 104,000,000
+  Tiempo baseline:  25,545.73 seg (7.10 h)
+  Tiempo optimizado: 17,890.58 seg (4.97 h)
+  Tiempo ahorrado:   7,655.15 seg (2.13 h)
+  Speedup: 1.43×
+
+Pre-cómputo Productos ML:
+  Llamadas totales: 26,000,000
+  Tiempo baseline:  6,053.81 seg (1.68 h)
+  Tiempo optimizado: 5,469.99 seg (1.52 h)
+  Tiempo ahorrado:   583.82 seg (0.16 h)
+  Speedup: 1.11×
+
+Pre-cómputo √SNR:
+  Llamadas totales: 52,000,000
+  Tiempo baseline:  6,508.56 seg (1.81 h)
+  Tiempo optimizado: 6,224.32 seg (1.73 h)
+  Tiempo ahorrado:   284.24 seg (0.08 h)
+  Speedup: 1.05×
+
+XOR Bitwise:
+  Llamadas totales: 104,000,000
+  Tiempo baseline:  303.39 seg (0.08 h)
+  Tiempo optimizado: 238.20 seg (0.07 h)
+  Tiempo ahorrado:   65.19 seg (0.02 h)
+  Speedup: 1.27×
+
+Ruido Complejo Directo:
+  Llamadas totales: 26,000,000
+  Tiempo baseline:  2,328.23 seg (0.65 h)
+  Tiempo optimizado: 1,371.66 seg (0.38 h)
+  Tiempo ahorrado:   956.57 seg (0.27 h)
+  Speedup: 1.70×
+
+Skip Softmax:
+  Llamadas totales: 26,000,000
+  Tiempo baseline:  3,952.39 seg (1.10 h)
+  Tiempo optimizado: 3,409.39 seg (0.95 h)
+  Tiempo ahorrado:   543.00 seg (0.15 h)
+  Speedup: 1.16×
+
+Lookup Table Errores de Bit:
+  Llamadas totales: 104,000,000
+  Tiempo baseline:  9,748.06 seg (2.71 h)
+  Tiempo optimizado: 6,048.89 seg (1.68 h)
+  Tiempo ahorrado:   3,699.17 seg (1.03 h)
+  Speedup: 1.61×
+
+================================================================================
+RESUMEN TOTAL
+================================================================================
+
+Tiempo BASELINE (sin optimizaciones):
+  63,290.49 seg (17.58 horas)
+
+Tiempo OPTIMIZADO (con 8 optimizaciones):
+  40,931.77 seg (11.37 horas)
+
+Tiempo AHORRADO:
+  22,358.72 seg (6.21 horas)
+
+SPEEDUP TOTAL: 1.55×
+REDUCCIÓN: 35.3%
+
+================================================================================
+TABLA DE SPEEDUPS INDIVIDUALES
+================================================================================
+
+Optimización                               Speedup Individual Speedup Multiplicado
+--------------------------------------------------------------------------------
+Pre-cómputo Pseudoinversa                              31.75×               31.75×
+Eliminar CPU↔GPU                                        1.43×               45.34×
+Pre-cómputo Productos ML                                1.11×               50.18×
+Pre-cómputo √SNR                                        1.05×               52.47×
+XOR Bitwise                                             1.27×               66.83×
+Ruido Complejo Directo                                  1.70×              113.43×
+Skip Softmax                                            1.16×              131.50×
+Lookup Table Errores de Bit                             1.61×              211.91×
+--------------------------------------------------------------------------------
+SPEEDUP MULTIPLICADO (teórico)                                             211.91×
+
+NOTA: El speedup multiplicado es teórico. El speedup REAL de la simulación
+      completa es 1.55× (ver RESUMEN TOTAL arriba).
+      La diferencia se debe a overhead fijo y Ley de Amdahl.
+
+================================================================================

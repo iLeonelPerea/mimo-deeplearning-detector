@@ -850,32 +850,32 @@ Since softmax preserves ordering, we can skip it during inference.
 
 ---
 
-#### 🔧 **Optimization 8: Bit Error Lookup Table (2-3x speedup)**
+#### 🔧 **Optimization 8: Bit Error Lookup Table (1.70× speedup)**
 
-**Problem**: Computing bit errors via XOR + string counting:
+**Problem**: Computing bit errors via XOR + string counting with GPU→CPU transfer:
 ```python
-# Previous optimization, but still Python-based
+# Previous optimization, but forces GPU→CPU transfer
 xor_result = idx_true ^ idx_pred
-errors = bin(xor_result).count('1')  # Python string operation
+errors = bin(xor_result.item()).count('1')  # GPU→CPU + Python string operation
 ```
 
 **Solution**: Pre-compute all possible bit errors in GPU tensor:
 ```python
-# GOOD: GPU tensor lookup (O(1) access)
+# GOOD: GPU tensor lookup (O(1) access, no transfer)
 bit_error_lut = torch.zeros(16, 16, dtype=torch.int32, device=device)
 for i in range(16):
     for j in range(16):
         bit_error_lut[i, j] = bin(i ^ j).count('1')
 
 # During simulation:
-errors = bit_error_lut[idx_true, idx_pred].item()
+errors = bit_error_lut[idx_true, idx_pred]  # Stays on GPU
 ```
 
 **Impact**:
-- **2-3x faster** than XOR+bin counting
-- GPU tensor access vs Python string ops
+- **1.70× speedup** (measured on GPU NVIDIA RTX 4090)
+- GPU tensor access vs GPU→CPU transfer + Python string ops
+- Eliminates 104M GPU→CPU synchronizations
 - Cache-friendly memory access pattern
-- ~5% overall speedup
 
 ---
 

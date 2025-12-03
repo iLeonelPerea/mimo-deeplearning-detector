@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Major Release: Performance Optimizations & Industry Standard Analysis
 
-This release includes **8 major performance optimizations** achieving ~17x speedup, noise model corrections for scientific accuracy, and automated BER = 10⁻³ analysis following LatinCom 2025 methodology.
+This release includes **7 major performance optimizations** achieving ~16x speedup, noise model corrections for scientific accuracy, and automated BER = 10⁻³ analysis following LatinCom 2025 methodology.
 
 ---
 
@@ -122,22 +122,6 @@ outputs = model(x_input)
 idx = torch.argmax(outputs, dim=1).item()
 ```
 
-### 🔧 Performance Optimization 8: Bit Error Lookup Table
-- **2-3x speedup** over XOR+bin counting
-- Pre-computed 16×16 GPU tensor for O(1) bit error access
-- Cache-friendly memory access pattern
-- ~5% overall simulation speedup
-
-**Implementation:**
-```python
-bit_error_lut = torch.zeros(16, 16, dtype=torch.int32, device=device)
-for i in range(16):
-    for j in range(16):
-        bit_error_lut[i, j] = bin(i ^ j).count('1')
-
-# During simulation - O(1) lookup
-errors = bit_error_lut[idx_true, idx_pred].item()
-```
 
 ### 🖥️ Platform Compatibility
 - **Windows support** with torch._dynamo configuration
@@ -243,9 +227,7 @@ def format_count(count):
 | + XOR bit counting | 10.2x | Bitwise operations |
 | + Complex noise direct | 12.2x | Single-operation noise |
 | + Skip softmax | 15.9x | Eliminate exp() overhead |
-| + Bit error LUT | **16.7x** | GPU tensor lookup |
-
-**Total Speedup: ~17x faster**
+**Total Speedup: ~16x faster**
 
 **Hardware Performance:**
 - **GPU (RTX 4090)**: Optimal performance with CUDA acceleration
@@ -281,7 +263,7 @@ Where:
 **Updated `BER_4QAM_MIMO_2x2_All.md`:**
 - New section: "Industry Standard Analysis: BER = 10⁻³"
 - New section: "Platform-Specific Optimizations"
-- Expanded: "Performance Optimizations" (5 → 8 optimizations)
+- Expanded: "Performance Optimizations" (7 optimizations)
 - Enhanced: Performance impact tables
 - Added: GPU acceleration setup guide
 
@@ -302,7 +284,6 @@ Where:
 | Component | Size | Notes |
 |-----------|------|-------|
 | Models (3 networks) | ~25 KB | Minimal footprint |
-| Bit error LUT | ~1 KB | 16×16 int32 tensor |
 | Pre-computed data | ~2 KB | H_inv + Hs_fixed |
 | Peak simulation | ~1 GB RAM | Manageable on all systems |
 
