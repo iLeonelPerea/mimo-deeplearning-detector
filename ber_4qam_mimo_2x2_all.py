@@ -89,6 +89,12 @@ snr_step = 1           # 26 SNR points (0, 1, 2, ..., 25)
 
 SNR_dB = np.arange(0, 26, snr_step)  # SNR range from 0 to 25 dB
 
+# =====================================
+# Configuration Parameters
+# =====================================
+USE_ZF = False    # Zero-Forcing equalization: False = no ZF (matching MATLAB), True = with ZF
+USE_BIAS = False  # Bias in hidden layer: False = no bias (matching MATLAB b_oh=0), True = with bias
+
 print("="*70)
 print("BER Simulation Configuration - FULL SIMULATION")
 print("="*70)
@@ -100,6 +106,9 @@ print(f"SNR range: {SNR_dB[0]} to {SNR_dB[-1]} dB (step: {snr_step} dB)")
 print(f"SNR points: {len(SNR_dB)}")
 print(f"Monte Carlo iterations: {n_iter:,}")
 print(f"Total simulations: {len(SNR_dB) * n_iter:,}")
+print(f"\nConfiguration:")
+print(f"  Zero-Forcing Equalization: {'ENABLED' if USE_ZF else 'DISABLED (matching MATLAB)'}")
+print(f"  Hidden Layer Bias: {'ENABLED' if USE_BIAS else 'DISABLED (matching MATLAB b_oh=0)'}")
 print("="*70)
 
 """## 3. Generate QAM Constellation and Symbol Combinations"""
@@ -182,18 +191,26 @@ class MIMO_Detector(nn.Module):
     """
     Deep Learning-based MIMO detector with ReLU activation.
     Architecture: Input(4) -> Hidden(100) + ReLU -> Output(variable)
+
+    Args:
+        use_sigmoid_hidden (bool): If True, applies sigmoid before ReLU in hidden layer
+        use_bias (bool): If True, uses bias in hidden layer (default: False to match MATLAB)
     """
 
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size, output_size, use_sigmoid_hidden=False, use_bias=False):
         super(MIMO_Detector, self).__init__()
-        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.use_sigmoid_hidden = use_sigmoid_hidden
+        self.layer1 = nn.Linear(input_size, hidden_size, bias=use_bias)
         self.layer2 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
         """
-        Forward pass through the network with ReLU.
+        Forward pass through the network with optional sigmoid + ReLU.
         """
-        x = F.relu(self.layer1(x))
+        x = self.layer1(x)
+        if self.use_sigmoid_hidden:
+            x = torch.sigmoid(x)  # Optional sigmoid for DSE/OHA strategies
+        x = F.relu(x)
         x = self.layer2(x)
         return x
 
@@ -239,11 +256,19 @@ for i, (model_path, output_size, name) in enumerate(zip(model_paths, output_size
         # Load checkpoint
         checkpoint = torch.load(model_path, map_location=device)
 
-        # Create model instance
+        # Determine activation configuration based on strategy
+        # One-Hot (i=0): ReLU only
+        # Label Encoder (i=1): Sigmoid + ReLU
+        # One-Hot Per Antenna (i=2): Sigmoid + ReLU
+        use_sigmoid_hidden = (i != 0)  # False for One-Hot, True for others
+
+        # Create model instance with matching configuration
         model = MIMO_Detector(
             input_size=4,
             hidden_size=100,
-            output_size=output_size
+            output_size=output_size,
+            use_sigmoid_hidden=use_sigmoid_hidden,
+            use_bias=USE_BIAS
         ).to(device)
 
         # Load weights
@@ -257,6 +282,17 @@ for i, (model_path, output_size, name) in enumerate(zip(model_paths, output_size
         print(f"[OK] Model {i+1} ({name}): Loaded successfully")
         print(f"  - Output size: {output_size}")
         print(f"  - Test accuracy: {checkpoint['final_metrics']['final_test_accuracy']:.4f}")
+
+        # Measure GPU memory footprint for this model
+        torch.cuda.reset_peak_memory_stats()
+        dummy_input = torch.randn(1, 4, device=device)
+        for _ in range(1000):
+            with torch.no_grad():
+                _ = model(dummy_input)
+        peak_memory_mb = torch.cuda.max_memory_allocated() / (1024**2)
+        model_params = sum(p.numel() for p in model.parameters())
+        print(f"  - GPU Memory: {peak_memory_mb:.2f} MB")
+        print(f"  - Parameters: {model_params:,}")
 
     except FileNotFoundError:
         print(f"[ERROR] Model {i+1} ({name}): File not found - {model_path}")
@@ -307,7 +343,7 @@ def maximum_likelihood_detector(r, Hs_precomputed, sqrt_SNR):
     return idx
 
 
-def dl_detector_onehot(model, r, device):
+def dl_detector_onehot(model, r, device, H_inv=None, use_zf=False):
     """
     Deep Learning detector with one-hot encoding.
 
@@ -315,13 +351,21 @@ def dl_detector_onehot(model, r, device):
         model: Trained neural network
         r (torch.Tensor): Received signal
         device: CPU or CUDA device
+        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for ZF)
+        use_zf (bool): If True, applies Zero-Forcing equalization
 
     Returns:
         int: Detected symbol combination index (1-indexed)
     """
+    # Apply Zero-Forcing equalization if enabled
+    if use_zf and H_inv is not None:
+        r_processed = H_inv @ r
+    else:
+        r_processed = r
+
     # Prepare input: [real(r1), imag(r1), real(r2), imag(r2)]
     # Keep everything on GPU - no CPU transfers
-    x_input = torch.stack([r[0].real, r[0].imag, r[1].real, r[1].imag]).unsqueeze(0)
+    x_input = torch.stack([r_processed[0].real, r_processed[0].imag, r_processed[1].real, r_processed[1].imag]).unsqueeze(0)
 
     # Forward pass
     with torch.no_grad():
@@ -334,7 +378,7 @@ def dl_detector_onehot(model, r, device):
     return idx
 
 
-def dl_detector_label_encoder(model, r, idx_sign, device):
+def dl_detector_label_encoder(model, r, idx_sign, device, H_inv=None, use_zf=False):
     """
     Deep Learning detector with label/symbol encoding.
 
@@ -343,13 +387,21 @@ def dl_detector_label_encoder(model, r, idx_sign, device):
         r (torch.Tensor): Received signal (already on GPU)
         idx_sign (torch.Tensor): Sign-based encoding matrix
         device: CPU or CUDA device
+        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for ZF)
+        use_zf (bool): If True, applies Zero-Forcing equalization
 
     Returns:
         int: Detected symbol combination index (1-indexed)
     """
+    # Apply Zero-Forcing equalization if enabled
+    if use_zf and H_inv is not None:
+        r_processed = H_inv @ r
+    else:
+        r_processed = r
+
     # Prepare input
     # Keep everything on GPU - no CPU transfers
-    x_input = torch.stack([r[0].real, r[0].imag, r[1].real, r[1].imag]).unsqueeze(0)
+    x_input = torch.stack([r_processed[0].real, r_processed[0].imag, r_processed[1].real, r_processed[1].imag]).unsqueeze(0)
 
     # Forward pass
     with torch.no_grad():
@@ -369,7 +421,7 @@ def dl_detector_label_encoder(model, r, idx_sign, device):
             return 1  # Default to first symbol if no match
 
 
-def dl_detector_onehot_per_antenna(model, r, symbol_indices, device):
+def dl_detector_onehot_per_antenna(model, r, symbol_indices, device, H_inv=None, use_zf=False):
     """
     Deep Learning detector with one-hot encoding per antenna.
 
@@ -378,13 +430,21 @@ def dl_detector_onehot_per_antenna(model, r, symbol_indices, device):
         r (torch.Tensor): Received signal (already on GPU)
         symbol_indices (torch.Tensor): Symbol index combinations
         device: CPU or CUDA device
+        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for ZF)
+        use_zf (bool): If True, applies Zero-Forcing equalization
 
     Returns:
         int: Detected symbol combination index (1-indexed)
     """
+    # Apply Zero-Forcing equalization if enabled
+    if use_zf and H_inv is not None:
+        r_processed = H_inv @ r
+    else:
+        r_processed = r
+
     # Prepare input
     # Keep everything on GPU - no CPU transfers
-    x_input = torch.stack([r[0].real, r[0].imag, r[1].real, r[1].imag]).unsqueeze(0)
+    x_input = torch.stack([r_processed[0].real, r_processed[0].imag, r_processed[1].real, r_processed[1].imag]).unsqueeze(0)
 
     # Forward pass
     with torch.no_grad():
@@ -463,6 +523,9 @@ BER_DL1 = np.zeros(len(SNR_dB))  # One-hot
 BER_DL2 = np.zeros(len(SNR_dB))  # Label encoder
 BER_DL3 = np.zeros(len(SNR_dB))  # One-hot per antenna
 
+# Initialize time tracking array
+SNR_time = np.zeros(len(SNR_dB))  # Time per SNR point in seconds
+
 # Convert SNR to linear scale
 SNR_linear = 10.0 ** (SNR_dB / 10.0)
 
@@ -476,15 +539,22 @@ print(f"Estimated simulation time: ~{len(SNR_dB) * n_iter / 10000:.1f} seconds")
 print("="*70)
 print()
 
+# Initialize timing for throughput calculation
+start_time_simulation = time.time()
+total_detections = 0
+
 # FIXED CHANNEL: Same channel used during training for fair comparison
 H_fixed = torch.tensor([[-0.90064 + 1j*0.43457, -0.99955 + 1j*0.029882],
                         [-0.1979 + 1j*0.98022, 0.44866 + 1j*0.8937]],
                        dtype=torch.complex64, device=device)
 H_fixed = H_fixed / torch.abs(H_fixed)  # Normalize by element-wise magnitude
 
-# Pre-compute pseudoinverse ONCE (not inside the loop!)
-# This saves 26 million redundant computations
-H_inv_fixed = torch.linalg.pinv(H_fixed)
+# Compute pseudoinverse if Zero-Forcing is enabled (configuration option)
+# When enabled, it's computed once before the loop for efficiency
+if USE_ZF:
+    H_inv_fixed = torch.linalg.pinv(H_fixed)
+else:
+    H_inv_fixed = None  # Not used when ZF is disabled (matching MATLAB)
 
 # Pre-compute H*s products for ML detector (H is fixed, so this is constant)
 # symbol_combinations_tx: (16, 2), H_fixed: (2, 2)
@@ -506,6 +576,9 @@ snr_pbar = tqdm(enumerate(SNR_linear), total=len(SNR_linear),
                 desc="SNR Progress", ncols=100, position=0)
 
 for j, SNR_j in snr_pbar:
+
+    # Start timer for this SNR point
+    snr_start_time = time.time()
 
     # Initialize bit error counters
     bit_errors_ml = 0
@@ -566,17 +639,17 @@ for j, SNR_j in snr_pbar:
             bit_errors_ml += count_bit_errors(idx_sel - 1, idx_ml - 1)
 
         # ==========================================
-        # DL Detectors: Use Zero-Forcing Equalization
+        # DL Detectors: Optional Zero-Forcing Equalization
         # ==========================================
-        # Apply ZF equalization: r_eq = H^+ * r
-        # where H^+ is the Moore-Penrose pseudoinverse of H (pre-computed)
-        r_eq = H_inv_fixed @ r
+        # Note: ZF equalization is controlled by USE_ZF configuration parameter
+        # When USE_ZF=False (default), matches MATLAB behavior (detector_ELM_2x2_all.m)
+        # When USE_ZF=True, applies H^+ equalization before detection
 
         # ==========================================
         # DL Detector 1: One-Hot Encoding
         # ==========================================
         if models[0] is not None:
-            idx_dl1 = dl_detector_onehot(models[0], r_eq, device)
+            idx_dl1 = dl_detector_onehot(models[0], r, device, H_inv_fixed, USE_ZF)
             if idx_dl1 != idx_sel:
                 bit_errors_dl1 += count_bit_errors(idx_sel - 1, idx_dl1 - 1)
 
@@ -584,17 +657,21 @@ for j, SNR_j in snr_pbar:
         # DL Detector 2: Label Encoding
         # ==========================================
         if models[1] is not None:
-            idx_dl2 = dl_detector_label_encoder(models[1], r_eq, idx_sign, device)
+            idx_dl2 = dl_detector_label_encoder(models[1], r, idx_sign, device, H_inv_fixed, USE_ZF)
             if idx_dl2 != idx_sel:
                 bit_errors_dl2 += count_bit_errors(idx_sel - 1, idx_dl2 - 1)
 
         # ==========================================
-        # DL Detector 3: One-Hot Per Antenna
+        # DL Detector 3: One-Hat Per Antenna
         # ==========================================
         if models[2] is not None:
-            idx_dl3 = dl_detector_onehot_per_antenna(models[2], r_eq, symbol_indices, device)
+            idx_dl3 = dl_detector_onehot_per_antenna(models[2], r, symbol_indices, device, H_inv_fixed, USE_ZF)
             if idx_dl3 != idx_sel:
                 bit_errors_dl3 += count_bit_errors(idx_sel - 1, idx_dl3 - 1)
+
+        # Count detections for throughput calculation
+        # Each iteration performs 4 detections: 1 ML + 3 DL detectors
+        total_detections += 4
 
         # Update progress bar with error statistics every 10 seconds
         # Note: time.time() is called on every iteration but only triggers update every 10s
@@ -630,6 +707,10 @@ for j, SNR_j in snr_pbar:
 
     # Close nested progress bar
     iter_pbar.close()
+
+    # Calculate time for this SNR point
+    snr_end_time = time.time()
+    SNR_time[j] = snr_end_time - snr_start_time
 
     # Calculate BER for this SNR point
     total_bits = n_iter * bits_per_symbol * Nt  # Total transmitted bits
@@ -672,6 +753,7 @@ for j, SNR_j in snr_pbar:
         BER_DL1 = BER_DL1[:j+1]
         BER_DL2 = BER_DL2[:j+1]
         BER_DL3 = BER_DL3[:j+1]
+        SNR_time = SNR_time[:j+1]
         break
 
     # Initialize plot after first SNR point (avoid blank window)
@@ -735,8 +817,18 @@ for j, SNR_j in snr_pbar:
     plt.tight_layout()
     plt.pause(0.001)  # Non-blocking update with minimal pause for interaction
 
+# Calculate throughput metrics
+end_time_simulation = time.time()
+total_time_seconds = end_time_simulation - start_time_simulation
+throughput_total = total_detections / total_time_seconds  # detections/second
+
 print("\n" + "="*70)
 print("BER Simulation Complete!")
+print("="*70)
+print(f"\n📊 Performance Metrics:")
+print(f"  Total Detections:  {total_detections:,}")
+print(f"  Total Time:        {total_time_seconds:.2f} seconds ({total_time_seconds/3600:.2f} hours)")
+print(f"  Throughput:        {throughput_total:,.0f} detections/second ({throughput_total/1000:.1f} K det/s)")
 print("="*70)
 
 # Turn off interactive mode
@@ -745,11 +837,11 @@ plt.ioff()
 """## 9. Display BER Results Table"""
 
 # Display BER results in a table
-print("\n" + "="*80)
+print("\n" + "="*95)
 print("BER Results Summary")
-print("="*80)
-print(f"{'SNR (dB)':<10} {'ML':<15} {'One-Hot':<15} {'Label Enc.':<15} {'OH Per Ant.':<15}")
-print("="*80)
+print("="*95)
+print(f"{'SNR (dB)':<10} {'ML':<15} {'One-Hot':<15} {'Label Enc.':<15} {'OH Per Ant.':<15} {'Time (s)':<12}")
+print("="*95)
 
 for i, snr in enumerate(SNR_dB):
     # Only print every 2 dB for readability
@@ -758,9 +850,10 @@ for i, snr in enumerate(SNR_dB):
         dl1_str = f"{BER_DL1[i]:.6e}" if not np.isnan(BER_DL1[i]) else "N/A"
         dl2_str = f"{BER_DL2[i]:.6e}" if not np.isnan(BER_DL2[i]) else "N/A"
         dl3_str = f"{BER_DL3[i]:.6e}" if not np.isnan(BER_DL3[i]) else "N/A"
-        print(f"{snr:<10} {ml_str:<15} {dl1_str:<15} {dl2_str:<15} {dl3_str:<15}")
+        time_str = f"{SNR_time[i]:.2f}"
+        print(f"{snr:<10} {ml_str:<15} {dl1_str:<15} {dl2_str:<15} {dl3_str:<15} {time_str:<12}")
 
-print("="*80)
+print("="*95)
 
 """## 10. Plot BER Curves (Figure 3)
 
@@ -994,6 +1087,7 @@ results = {
     'BER_OneHot': BER_DL1,
     'BER_LabelEncoder': BER_DL2,
     'BER_OneHotPerAntenna': BER_DL3,
+    'SNR_time_seconds': SNR_time,
     'n_iterations': n_iter,
     'MIMO_config': f'{Nt}x{Nr}',
     'modulation': f'{M}-QAM'
@@ -1005,20 +1099,21 @@ np.save('BER_results_MIMO_2x2.npy', results)
 # Also save as text file for easy inspection
 with open('BER_results_MIMO_2x2.txt', 'w') as f:
     f.write("BER Results - MIMO 2x2 with 4-QAM\n")
-    f.write("="*80 + "\n")
+    f.write("="*95 + "\n")
     f.write(f"Monte Carlo Iterations: {n_iter:,}\n")
     f.write(f"MIMO Configuration: {Nt}x{Nr}\n")
     f.write(f"Modulation: {M}-QAM\n")
-    f.write("="*80 + "\n\n")
-    f.write(f"{'SNR (dB)':<10} {'ML':<15} {'One-Hot':<15} {'Label Enc.':<15} {'OH Per Ant.':<15}\n")
-    f.write("-"*80 + "\n")
+    f.write("="*95 + "\n\n")
+    f.write(f"{'SNR (dB)':<10} {'ML':<15} {'One-Hot':<15} {'Label Enc.':<15} {'OH Per Ant.':<15} {'Time (s)':<12}\n")
+    f.write("-"*95 + "\n")
 
     for i, snr in enumerate(SNR_dB):
         f.write(f"{snr:<10.1f} ")
         f.write(f"{BER_ML[i]:<15.6e} ")
         f.write(f"{BER_DL1[i] if not np.isnan(BER_DL1[i]) else 0:<15.6e} ")
         f.write(f"{BER_DL2[i] if not np.isnan(BER_DL2[i]) else 0:<15.6e} ")
-        f.write(f"{BER_DL3[i] if not np.isnan(BER_DL3[i]) else 0:<15.6e}\n")
+        f.write(f"{BER_DL3[i] if not np.isnan(BER_DL3[i]) else 0:<15.6e} ")
+        f.write(f"{SNR_time[i]:<12.2f}\n")
 
 print("Results saved to:")
 print("  - BER_results_MIMO_2x2.npy")

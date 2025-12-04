@@ -18,8 +18,8 @@
 # ----------------------------------------------------------------------------
 # Core Deep Learning Framework
 # ----------------------------------------------------------------------------
-torch>=2.0.0              # PyTorch - Deep learning framework
-torchvision>=0.15.0       # PyTorch vision library (optional, for utilities)
+# torch>=2.0.0              # PyTorch - Deep learning framework (install manually for CUDA support)
+# torchvision>=0.15.0       # PyTorch vision library (optional, for utilities)
 
 # ----------------------------------------------------------------------------
 # Numerical Computing and Scientific Libraries
