@@ -204,7 +204,7 @@ Generate training data by:
 5. Creating one-hot encoded labels
 """
 
-def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, device='cpu'):
+def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, device='cpu', use_zf=False):
     """
     Generates training data for the MIMO detector.
 
@@ -216,6 +216,7 @@ def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, devic
         Nr (int): Number of receive antennas
         Nt (int): Number of transmit antennas
         device (str): Device to use ('cpu' or 'cuda')
+        use_zf (bool): If True, applies Zero-Forcing equalization (default: False to match MATLAB)
 
     Returns:
         tuple: (X_data, random_indices) where X_data contains received signals
@@ -234,9 +235,14 @@ def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, devic
                      dtype=torch.complex64, device=device)
     H = H / torch.abs(H)  # Normalize by element-wise magnitude
 
+    # Pre-compute pseudoinverse if using ZF (optimization)
+    if use_zf:
+        H_inv = torch.linalg.pinv(H)
+
     print("Generating training data...")
     print(f"Progress: 0%", end='')
     print(f"\nUsing FIXED channel H (same as MATLAB reference)")
+    print(f"Zero-Forcing equalization: {'ENABLED' if use_zf else 'DISABLED (matching MATLAB)'}")
 
     for i in range(N):
         # Progress indicator
@@ -261,24 +267,34 @@ def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, devic
         # Received signal: r = sqrt(SNR) * H * x + n
         r_x = np.sqrt(SNR_linear_sample) * torch.matmul(H, selected_symbols) + n
 
-        # Channel equalization using pseudo-inverse (Zero-Forcing): r_eq = H^+ * r
-        H_inv = torch.linalg.pinv(H)
-        r_eq = torch.matmul(H_inv, r_x)
+        # Apply Zero-Forcing equalization if enabled
+        if use_zf:
+            # Channel equalization using pseudo-inverse (Zero-Forcing): r_eq = H^+ * r
+            r_processed = torch.matmul(H_inv, r_x)
+        else:
+            # Use received signal directly (matching MATLAB default behavior)
+            r_processed = r_x
 
         # Store real and imaginary parts: [real(r1), imag(r1), real(r2), imag(r2)]
-        X_data[i, 0] = r_eq[0].real
-        X_data[i, 1] = r_eq[0].imag
-        X_data[i, 2] = r_eq[1].real
-        X_data[i, 3] = r_eq[1].imag
+        X_data[i, 0] = r_processed[0].real
+        X_data[i, 1] = r_processed[0].imag
+        X_data[i, 2] = r_processed[1].real
+        X_data[i, 3] = r_processed[1].imag
 
     print("\rProgress: 100% - Complete!")
 
     return X_data, random_indices
 
 
+# =====================================
+# Configuration Parameters
+# =====================================
+USE_ZF = False    # Zero-Forcing equalization: False = no ZF (matching MATLAB), True = with ZF
+USE_BIAS = False  # Bias in hidden layer: False = no bias (matching MATLAB b_oh=0), True = with bias
+
 # Generate training data
 X_data, random_indices = generate_training_data(
-    N, symbol_combinations, SNR_linear, No, Nr, Nt, device
+    N, symbol_combinations, SNR_linear, No, Nr, Nt, device, use_zf=USE_ZF
 )
 
 print(f"\nGenerated data shape: {X_data.shape}")
@@ -396,17 +412,23 @@ class MIMO_Detector(nn.Module):
 
     Architecture:
         - Input layer: 2*Nr neurons
-        - Hidden layer: hidden_size neurons with ReLU activation
+        - Hidden layer: hidden_size neurons with ReLU activation (optional sigmoid)
         - Output layer: M^Nt neurons with Softmax activation
 
     The network is initialized using Xavier initialization for better convergence.
+
+    Args:
+        use_sigmoid_hidden (bool): If True, applies sigmoid before ReLU in hidden layer (default: False)
+        use_bias (bool): If True, uses bias in hidden layer (default: False to match MATLAB)
     """
 
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size, output_size, use_sigmoid_hidden=False, use_bias=False):
         super(MIMO_Detector, self).__init__()
 
-        # Define layers
-        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.use_sigmoid_hidden = use_sigmoid_hidden
+
+        # Define layers (bias=False to match MATLAB: b_oh = 0)
+        self.layer1 = nn.Linear(input_size, hidden_size, bias=use_bias)
         self.layer2 = nn.Linear(hidden_size, output_size)
 
         # Xavier/Glorot initialization
@@ -418,7 +440,8 @@ class MIMO_Detector(nn.Module):
         Biases are initialized to zero.
         """
         nn.init.xavier_uniform_(self.layer1.weight)
-        nn.init.zeros_(self.layer1.bias)
+        if self.layer1.bias is not None:
+            nn.init.zeros_(self.layer1.bias)
         nn.init.xavier_uniform_(self.layer2.weight)
         nn.init.zeros_(self.layer2.bias)
 
@@ -432,8 +455,11 @@ class MIMO_Detector(nn.Module):
         Returns:
             torch.Tensor: Output logits of shape (batch_size, output_size)
         """
-        # Hidden layer with ReLU activation
-        x = F.relu(self.layer1(x))
+        # Hidden layer activation
+        x = self.layer1(x)
+        if self.use_sigmoid_hidden:
+            x = torch.sigmoid(x)  # Optional sigmoid (for MATLAB compatibility with DSE/OHA)
+        x = F.relu(x)  # ReLU activation
 
         # Output layer (logits, softmax applied in loss function)
         x = self.layer2(x)
@@ -441,8 +467,14 @@ class MIMO_Detector(nn.Module):
         return x
 
 
-# Instantiate the model
-model = MIMO_Detector(input_size, hidden_size, output_size).to(device)
+# Instantiate the model with configuration parameters
+model = MIMO_Detector(
+    input_size,
+    hidden_size,
+    output_size,
+    use_sigmoid_hidden=False,  # One-Hot uses only ReLU (matching MATLAB line 116)
+    use_bias=USE_BIAS
+).to(device)
 
 # Display model architecture
 print("="*60)

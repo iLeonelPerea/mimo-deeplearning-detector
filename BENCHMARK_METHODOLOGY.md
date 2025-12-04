@@ -22,7 +22,7 @@
 
 ## Introducción
 
-Este documento describe la metodología rigurosa implementada para **validar experimentalmente** las 8 optimizaciones propuestas en el sistema de detección MIMO 2×2 4-QAM basado en deep learning.
+Este documento describe la metodología rigurosa implementada para **validar experimentalmente** las 7 optimizaciones propuestas en el sistema de detección MIMO 2×2 4-QAM basado en deep learning.
 
 ### Problema a Resolver
 
@@ -363,67 +363,11 @@ print(f"Tiempo: {mean_time:.6f} ± {std_time:.6f} ms")
 
 ## Optimizaciones Evaluadas
 
-Este documento describe las 8 optimizaciones principales implementadas y evaluadas experimentalmente. Todas las mediciones fueron realizadas en GPU (NVIDIA RTX 4090) con CUDA 12.1.
+Este documento describe las 7 optimizaciones principales implementadas y evaluadas experimentalmente. Todas las mediciones fueron realizadas en GPU (NVIDIA RTX 4090) con CUDA 12.1.
 
-### Optimización 1: Pre-cómputo de Pseudoinversa ⭐⭐⭐
+**Nota sobre pseudoinversa (Zero-Forcing):** La pseudoinversa H⁺ es una **opción de configuración** (parámetro `USE_ZF`), no una optimización. Cuando `USE_ZF=True`, la pseudoinversa se pre-calcula eficientemente antes del loop de simulación, pero esta funcionalidad es opcional según la configuración deseada. Por defecto `USE_ZF=False` para coincidir con la implementación MATLAB de referencia.
 
-**Concepto:**
-Calcular `H_inv = pinv(H)` **una sola vez** antes del loop de simulación, no en cada iteración.
-
-**Baseline (MALO):**
-```python
-def baseline_pinv():
-    """Calcular pseudoinversa en cada iteración"""
-    H_inv = torch.linalg.pinv(H_fixed)  # ← SVD: O(n³), muy costoso
-    return H_inv
-
-# En simulación Monte Carlo:
-for iter in range(1_000_000):
-    H_inv = torch.linalg.pinv(H_fixed)  # ← 1M veces!
-    r_eq = H_inv @ r
-```
-
-**Optimizado (BUENO):**
-```python
-# Pre-computar UNA vez antes del loop
-H_inv_precomputed = torch.linalg.pinv(H_fixed)
-
-def optimized_pinv():
-    """Usar pseudoinversa pre-computada"""
-    return H_inv_precomputed  # ← Lookup: O(1)
-
-# En simulación Monte Carlo:
-for iter in range(1_000_000):
-    r_eq = H_inv_precomputed @ r  # ← Solo multiplicación
-```
-
-**Por qué funciona:**
-- `H_fixed` es **constante** durante toda la simulación
-- `pinv(H)` también es constante → calcular una vez
-- SVD (Singular Value Decomposition) es O(n³): muy costoso
-- Lookup de variable es O(1): instantáneo
-
-**Benchmark en script:**
-```python
-print("OPTIMIZACIÓN 1: Pre-cómputo de Pseudoinversa")
-time_baseline, std_baseline = benchmark_function(baseline_pinv)
-time_optimized, std_optimized = benchmark_function(optimized_pinv)
-speedup = time_baseline / time_optimized
-print(f"Baseline:   {time_baseline:.6f} ± {std_baseline:.6f} ms")
-print(f"Optimized:  {time_optimized:.6f} ± {std_optimized:.6f} ms")
-print(f"Speedup:    {speedup:.2f}×")
-```
-
-**Resultado medido:**
-```
-Baseline:   0.028470 ± 0.003286 ms  (SVD cada vez)
-Optimized:  0.000061 ± 0.000315 ms  (lookup)
-Speedup:  464.81×
-```
-
----
-
-### Optimización 2: Eliminación de Transferencias CPU↔GPU ⭐⭐⭐
+### Optimización 1: Eliminación de Transferencias CPU↔GPU ⭐⭐⭐
 
 **Concepto:**
 Mantener datos en GPU sin copiar a CPU y de vuelta.
@@ -513,7 +457,7 @@ Speedup:    1.05×
 
 ---
 
-### Optimización 3: Pre-cómputo de Productos ML ⭐⭐
+### Optimización 2: Pre-cómputo de Productos ML ⭐⭐
 
 **Concepto:**
 Para detector ML óptimo, pre-calcular `H·s` para todas las 16 combinaciones de símbolos.
@@ -583,7 +527,7 @@ Speedup:    1.13×
 
 ---
 
-### Optimización 4: Pre-cómputo de √SNR ⭐
+### Optimización 3: Pre-cómputo de √SNR ⭐
 
 **Concepto:**
 Calcular `sqrt(SNR)` una vez por punto SNR, no en cada iteración.
@@ -641,7 +585,7 @@ Speedup:    1.07×
 
 ---
 
-### Optimización 5: XOR Bitwise para Conteo de Errores ⭐
+### Optimización 4: XOR Bitwise para Conteo de Errores ⭐
 
 **Concepto:**
 Usar operación XOR bitwise en lugar de convertir a strings.
@@ -705,7 +649,7 @@ Speedup:    1.28×
 
 ---
 
-### Optimización 6: Generación Directa de Ruido Complejo ⭐
+### Optimización 5: Generación Directa de Ruido Complejo ⭐
 
 **Concepto:**
 Generar ruido complejo en una operación, no separar real/imag.
@@ -760,7 +704,7 @@ Speedup:    2.19×
 
 ---
 
-### Optimización 7: Omisión de Softmax Innecesario ⭐⭐
+### Optimización 6: Omisión de Softmax Innecesario ⭐⭐
 
 **Concepto:**
 Para estrategia One-Hot, no calcular softmax antes de argmax.
@@ -847,7 +791,7 @@ Speedup:    1.10×
 
 ---
 
-### Optimización 8: Lookup Table para Errores de Bit ⭐⭐
+### Optimización 7: Lookup Table para Errores de Bit ⭐⭐
 
 **Concepto:**
 Pre-computar una tabla de lookup (LUT) en GPU para contar errores de bit, evitando transferencias GPU→CPU.
@@ -931,24 +875,23 @@ Speedup = 0.028470 / 0.000061 = 464.81×
 
 **Speedup Multiplicativo (Teórico):**
 ```
-Speedup_Multiplicativo = Speedup₁ × Speedup₂ × ... × Speedup₈
+Speedup_Multiplicativo = Speedup₁ × Speedup₂ × ... × Speedup₇
 
 Ejemplo (valores del benchmark GPU):
-Opt 1 (Pre-cómputo Pseudoinversa):     31.12×
-Opt 2 (Eliminar CPU↔GPU):               1.40×
-Opt 3 (Pre-cómputo Productos ML):       1.11×
-Opt 4 (Pre-cómputo √SNR):               1.01×
-Opt 5 (XOR Bitwise):                    1.27×
-Opt 6 (Ruido Complejo Directo):         1.71×
-Opt 7 (Skip Softmax):                   1.13×
-Opt 8 (Lookup Table):                   1.70×
+Opt 1 (Eliminar CPU↔GPU):               1.40×
+Opt 2 (Pre-cómputo Productos ML):       1.11×
+Opt 3 (Pre-cómputo √SNR):               1.01×
+Opt 4 (XOR Bitwise):                    1.27×
+Opt 5 (Ruido Complejo Directo):         1.71×
+Opt 6 (Skip Softmax):                   1.13×
+Opt 7 (Lookup Table):                   1.70×
 
-Speedup_Multiplicativo = 31.12 × 1.40 × 1.11 × 1.01 × 1.27 × 1.71 × 1.13 × 1.70 = 201.74×
+Speedup_Multiplicativo = 1.40 × 1.11 × 1.01 × 1.27 × 1.71 × 1.13 × 1.70 = 6.48×
 ```
 
 **IMPORTANTE - Speedup Real de Simulación Completa:**
 
-El speedup multiplicativo (201.74×) es **teórico** y **NO refleja el speedup real**.
+El speedup multiplicativo (6.48×) es **teórico** y **NO refleja el speedup real**.
 
 Cuando se mide la simulación completa extrapolada (26M iteraciones):
 ```
@@ -960,7 +903,7 @@ Reducción: 34.7% del tiempo total
 Tiempo ahorrado: 6.12 horas
 ```
 
-**¿Por qué la diferencia entre 201.74× (multiplicativo) y 1.53× (real)?**
+**¿Por qué la diferencia entre 6.48× (multiplicativo) y 1.53× (real)?**
 
 1. **Ley de Amdahl:** No todas las operaciones están optimizadas (I/O, inicialización, etc.)
 2. **Pesos temporales diferentes:** Algunas operaciones toman más tiempo que otras
@@ -973,11 +916,11 @@ El speedup **real** (1.53×) es el valor correcto para reportar en papers cient�
 
 ### Explicación Detallada: Speedup Multiplicativo vs Real
 
-**Speedup Multiplicativo (201.74×) - TEÓRICO:**
+**Speedup Multiplicativo (6.48×) - TEÓRICO:**
 
 Es el **producto** de todos los speedups individuales medidos en micro-benchmarks:
 ```
-31.12× × 1.40× × 1.11× × 1.01× × 1.27× × 1.71× × 1.13× × 1.70× = 201.74×
+1.40× × 1.11× × 1.01× × 1.27× × 1.71× × 1.13× × 1.70× = 6.48×
 ```
 
 **Asunciones del modelo multiplicativo:**
@@ -996,7 +939,7 @@ Es el **producto** de todos los speedups individuales medidos en micro-benchmark
 Es la mejora **end-to-end** medida directamente en la simulación completa:
 ```
 Tiempo Baseline:   17.64 horas (63,497.83 seg) - sin optimizaciones
-Tiempo Optimizado: 11.51 horas (41,448.89 seg) - con 8 optimizaciones
+Tiempo Optimizado: 11.51 horas (41,448.89 seg) - con 7 optimizaciones
 Speedup Real = 17.64 / 11.51 = 1.53×
 ```
 
@@ -1020,7 +963,7 @@ La diferencia es **cómo se calcula el speedup**:
 |---------|---------------|------|
 | **Método** | Producto de speedups individuales | Medición end-to-end directa |
 | **Asume** | 100% del tiempo es optimizable | Incluye todo (optimizado + no optimizado) |
-| **Valor** | 201.74× | 1.53× |
+| **Valor** | 6.48× | 1.53× |
 | **Utilidad** | Comparar impacto de cada optimización | Mejora real para el usuario final |
 | **Reportar en paper** | ❌ Solo como referencia teórica | ✅ Este es el valor correcto |
 
@@ -1063,14 +1006,14 @@ S = speedup de la parte optimizada
 
 **Ejemplo con nuestros datos:**
 
-Si aproximadamente el **70%** del tiempo se gasta en operaciones optimizadas con speedup 201.74×:
+Si aproximadamente el **70%** del tiempo se gasta en operaciones optimizadas con speedup 6.48×:
 ```
 P = 0.70
-S = 201.74
-Speedup_Real = 1 / ((1 - 0.70) + 0.70/201.74)
-             = 1 / (0.30 + 0.0035)
-             = 1 / 0.3035
-             = 3.29×
+S = 6.48
+Speedup_Real = 1 / ((1 - 0.70) + 0.70/6.48)
+             = 1 / (0.30 + 0.108)
+             = 1 / 0.408
+             = 2.45×
 ```
 
 En la práctica, nuestro speedup real es 1.53× porque:
@@ -1080,7 +1023,7 @@ En la práctica, nuestro speedup real es 1.53× porque:
 
 **Conclusión Final:**
 
-- **Speedup Multiplicativo (201.74×):** Útil para entender el impacto **acumulativo teórico** de las optimizaciones
+- **Speedup Multiplicativo (6.48×):** Útil para entender el impacto **acumulativo teórico** de las optimizaciones
 - **Speedup Real (1.53×):** El valor **correcto** para reportar en papers y al usuario final
 - **Ambos son válidos**, pero responden preguntas diferentes:
   - Multiplicativo: "¿Cuánto mejoraron las operaciones específicas?"
@@ -1116,7 +1059,6 @@ Interpretación:
 ```markdown
 | Optimización | Baseline (ms) | Optimizado (ms) | Speedup Individual |
 |--------------|---------------|-----------------|-------------------|
-| Pre-cómputo Pseudoinversa | 0.3399 | 0.0109 | 31.12× |
 | Eliminar CPU↔GPU | 0.2437 | 0.1746 | 1.40× |
 | Pre-cómputo Productos ML | 0.2342 | 0.2112 | 1.11× |
 | Pre-cómputo √SNR | 0.1232 | 0.1224 | 1.01× |
@@ -1132,22 +1074,21 @@ Interpretación:
 | Optimización | Speedup Individual | Speedup Multiplicativo |
 |--------------|-------------------|----------------------|
 | Baseline | 1.0× | 1.0× |
-| + Pre-cómputo Pseudoinversa | 31.12× | 31.12× |
-| + Eliminar CPU↔GPU | 1.40× | 43.43× |
-| + Pre-cómputo Productos ML | 1.11× | 48.17× |
-| + Pre-cómputo √SNR | 1.01× | 48.49× |
-| + XOR Bitwise | 1.27× | 61.47× |
-| + Ruido Complejo Directo | 1.71× | 105.27× |
-| + Skip Softmax | 1.13× | 118.95× |
-| + Lookup Table | 1.70× | 201.74× |
+| + Eliminar CPU↔GPU | 1.40× | 1.40× |
+| + Pre-cómputo Productos ML | 1.11× | 1.55× |
+| + Pre-cómputo √SNR | 1.01× | 1.57× |
+| + XOR Bitwise | 1.27× | 1.99× |
+| + Ruido Complejo Directo | 1.71× | 3.40× |
+| + Skip Softmax | 1.13× | 3.84× |
+| + Lookup Table | 1.70× | 6.48× |
 ```
 
-**NOTA IMPORTANTE:** El speedup multiplicativo (201.74×) es teórico. El **speedup real medido en simulación completa es 1.53×** (17.64h → 11.51h). Ver sección "Interpretación de Resultados" para detalles sobre esta diferencia.
+**NOTA IMPORTANTE:** El speedup multiplicativo (6.48×) es teórico. El **speedup real medido en simulación completa es 1.53×** (17.64h → 11.51h). Ver sección "Interpretación de Resultados" para detalles sobre esta diferencia.
 
 ### Gráficos Generados
 
 **1. Gráfico de Barras - Speedup Individual:**
-- Eje X: Optimizaciones (1-8)
+- Eje X: Optimizaciones (1-7)
 - Eje Y: Speedup (escala log)
 - Valores sobre barras
 
@@ -1225,7 +1166,7 @@ Midiendo baseline (pinv en cada iteración)... 52.341 ± 1.234 ms
 Midiendo optimizado (pinv pre-computada)... 0.023 ± 0.002 ms
 ➜ Speedup: 2,275.70×
 
-[... continúa para las 8 optimizaciones ...]
+[... continúa para las 7 optimizaciones ...]
 
 ================================================================================
 RESUMEN TOTAL
@@ -1234,7 +1175,7 @@ RESUMEN TOTAL
 Tiempo BASELINE (sin optimizaciones):
   63,497.83 seg (17.64 horas)
 
-Tiempo OPTIMIZADO (con 8 optimizaciones):
+Tiempo OPTIMIZADO (con 7 optimizaciones):
   41,448.89 seg (11.51 horas)
 
 Tiempo AHORRADO:
@@ -1249,16 +1190,15 @@ TABLA DE SPEEDUPS INDIVIDUALES
 
 Optimización                               Speedup Individual    Speedup Multiplicado
 --------------------------------------------------------------------------------
-Pre-cómputo Pseudoinversa                              31.12×                   31.12×
-Eliminar CPU↔GPU                                        1.40×                   43.43×
-Pre-cómputo Productos ML                                1.11×                   48.17×
-Pre-cómputo √SNR                                        1.01×                   48.49×
-XOR Bitwise                                             1.27×                   61.47×
-Ruido Complejo Directo                                  1.71×                  105.27×
-Skip Softmax                                            1.13×                  118.95×
-Lookup Table Errores de Bit                             1.70×                  201.74×
+Eliminar CPU↔GPU                                        1.40×                    1.40×
+Pre-cómputo Productos ML                                1.11×                    1.55×
+Pre-cómputo √SNR                                        1.01×                    1.57×
+XOR Bitwise                                             1.27×                    1.99×
+Ruido Complejo Directo                                  1.71×                    3.40×
+Skip Softmax                                            1.13×                    3.84×
+Lookup Table Errores de Bit                             1.70×                    6.48×
 --------------------------------------------------------------------------------
-SPEEDUP MULTIPLICADO (teórico)                                                201.74×
+SPEEDUP MULTIPLICADO (teórico)                                                  6.48×
 
 NOTA: El speedup multiplicado es teórico. El speedup REAL de la simulación
       completa es 1.53× (ver RESUMEN TOTAL arriba).
@@ -1479,17 +1419,17 @@ Para reportar en el artículo:
 - [ ] Software (Python 3.11, PyTorch 2.5.0, CUDA 12.1)
 - [ ] Número de iteraciones (10,000 por optimización)
 - [ ] Método de timing (`torch.cuda.Event`)
-- [ ] Tabla de 8 optimizaciones con speedups individuales
+- [ ] Tabla de 7 optimizaciones con speedups individuales
 - [ ] Gráficos (barras + línea acumulada)
-- [ ] **Speedup real: 1.53×** (no reportar el multiplicativo de 201.74×)
+- [ ] **Speedup real: 1.53×** (no reportar el multiplicativo de 6.48×)
 - [ ] Tiempo total: 17.64h → 11.51h (reducción 34.7%)
 - [ ] Mencionar que resultados son reproducibles
 - [ ] Explicar diferencia entre speedup multiplicativo y real (Ley de Amdahl)
 
 **Frase clave para el paper:**
-> "Se implementó un framework de benchmarking riguroso usando `torch.cuda.Event` para timing GPU preciso, con 10,000 iteraciones por optimización tras 100 iteraciones de warmup. Se evaluaron 8 optimizaciones que, aplicadas conjuntamente, logran un speedup real de **1.53×** en la simulación completa (de 17.64 a 11.51 horas), representando una reducción del 34.7% del tiempo de ejecución. Las mediciones fueron realizadas experimentalmente en GPU NVIDIA RTX 4090 con PyTorch 2.5.0 y CUDA 12.1."
+> "Se implementó un framework de benchmarking riguroso usando `torch.cuda.Event` para timing GPU preciso, con 10,000 iteraciones por optimización tras 100 iteraciones de warmup. Se evaluaron 7 optimizaciones que, aplicadas conjuntamente, logran un speedup real de **1.53×** en la simulación completa (de 17.64 a 11.51 horas), representando una reducción del 34.7% del tiempo de ejecución. Las mediciones fueron realizadas experimentalmente en GPU NVIDIA RTX 4090 con PyTorch 2.5.0 y CUDA 12.1."
 
-**IMPORTANTE:** No reportar el speedup multiplicativo (201.74×) como speedup real. Este valor es teórico y engañoso. El speedup real medido end-to-end es 1.53×.
+**IMPORTANTE:** No reportar el speedup multiplicativo (6.48×) como speedup real. Este valor es teórico y engañoso. El speedup real medido end-to-end es 1.53×.
 
 ---
 

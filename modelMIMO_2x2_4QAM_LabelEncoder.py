@@ -133,7 +133,7 @@ for i in range(5):
 
 """## 5. Generate Training Data"""
 
-def generate_training_data(N, symbol_combinations, idx_sign, SNR_linear, No, Nr, Nt, device='cpu'):
+def generate_training_data(N, symbol_combinations, idx_sign, SNR_linear, No, Nr, Nt, device='cpu', use_zf=False):
     X_data = torch.zeros((N, 2*Nr), dtype=torch.float32, device=device)
     y_labels = torch.zeros((N, output_size), dtype=torch.float32, device=device)
     random_indices = torch.randint(0, len(symbol_combinations), (N,), device=device)
@@ -145,8 +145,13 @@ def generate_training_data(N, symbol_combinations, idx_sign, SNR_linear, No, Nr,
                      dtype=torch.complex64, device=device)
     H = H / torch.abs(H)  # Normalize by element-wise magnitude
 
+    # Pre-compute pseudoinverse if using ZF (optimization)
+    if use_zf:
+        H_inv = torch.linalg.pinv(H)
+
     print("Generating training data...")
     print(f"Using FIXED channel H (same as MATLAB reference)")
+    print(f"Zero-Forcing equalization: {'ENABLED' if use_zf else 'DISABLED (matching MATLAB)'}")
     for i in range(N):
         if (i + 1) % (N // 10) == 0:
             print(f"  Progress: {int((i+1)/N*100)}%", end='\r')
@@ -168,20 +173,30 @@ def generate_training_data(N, symbol_combinations, idx_sign, SNR_linear, No, Nr,
         # Received signal: r = sqrt(SNR) * H * x + n
         r_x = np.sqrt(SNR_linear_sample) * torch.matmul(H, selected_symbols) + n
 
-        # Channel equalization using pseudo-inverse (Zero-Forcing): r_eq = H^+ * r
-        H_inv = torch.linalg.pinv(H)
-        r_eq = torch.matmul(H_inv, r_x)
+        # Apply Zero-Forcing equalization if enabled
+        if use_zf:
+            # Channel equalization using pseudo-inverse (Zero-Forcing): r_eq = H^+ * r
+            r_processed = torch.matmul(H_inv, r_x)
+        else:
+            # Use received signal directly (matching MATLAB default behavior)
+            r_processed = r_x
 
-        X_data[i, 0] = r_eq[0].real
-        X_data[i, 1] = r_eq[0].imag
-        X_data[i, 2] = r_eq[1].real
-        X_data[i, 3] = r_eq[1].imag
+        X_data[i, 0] = r_processed[0].real
+        X_data[i, 1] = r_processed[0].imag
+        X_data[i, 2] = r_processed[1].real
+        X_data[i, 3] = r_processed[1].imag
 
     print("  Progress: 100% - Complete!")
     return X_data, y_labels, random_indices
 
+# =====================================
+# Configuration Parameters
+# =====================================
+USE_ZF = False    # Zero-Forcing equalization: False = no ZF (matching MATLAB), True = with ZF
+USE_BIAS = False  # Bias in hidden layer: False = no bias (matching MATLAB b_oh=0), True = with bias
+
 X_data, y_labels, random_indices = generate_training_data(
-    N, symbol_combinations, idx_sign, SNR_linear, No, Nr, Nt, device
+    N, symbol_combinations, idx_sign, SNR_linear, No, Nr, Nt, device, use_zf=USE_ZF
 )
 
 print(f"\nData shape: {X_data.shape}")
@@ -231,26 +246,42 @@ class MIMO_Detector_LabelEncoder(nn.Module):
 
     Output: 4 binary values representing sign bits
     Loss: Binary Cross-Entropy
+
+    Args:
+        use_sigmoid_hidden (bool): If True, applies sigmoid before ReLU (default: True to match MATLAB)
+        use_bias (bool): If True, uses bias in hidden layer (default: False to match MATLAB)
     """
 
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size, output_size, use_sigmoid_hidden=True, use_bias=False):
         super(MIMO_Detector_LabelEncoder, self).__init__()
-        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.use_sigmoid_hidden = use_sigmoid_hidden
+        self.layer1 = nn.Linear(input_size, hidden_size, bias=use_bias)
         self.layer2 = nn.Linear(hidden_size, output_size)
         self._initialize_weights()
 
     def _initialize_weights(self):
         nn.init.xavier_uniform_(self.layer1.weight)
-        nn.init.zeros_(self.layer1.bias)
+        if self.layer1.bias is not None:
+            nn.init.zeros_(self.layer1.bias)
         nn.init.xavier_uniform_(self.layer2.weight)
         nn.init.zeros_(self.layer2.bias)
 
     def forward(self, x):
-        x = F.relu(self.layer1(x))
+        # Hidden layer activation (MATLAB: sigmoid + ReLU for DSE)
+        x = self.layer1(x)
+        if self.use_sigmoid_hidden:
+            x = torch.sigmoid(x)  # Sigmoid (matching MATLAB line 120)
+        x = F.relu(x)  # ReLU activation (matching MATLAB line 121)
         x = self.layer2(x)  # Logits (sigmoid applied in loss)
         return x
 
-model = MIMO_Detector_LabelEncoder(input_size, hidden_size, output_size).to(device)
+model = MIMO_Detector_LabelEncoder(
+    input_size,
+    hidden_size,
+    output_size,
+    use_sigmoid_hidden=True,  # Label Encoder uses Sigmoid + ReLU (matching MATLAB lines 120-121)
+    use_bias=USE_BIAS
+).to(device)
 print("="*70)
 print("Model Architecture")
 print("="*70)
