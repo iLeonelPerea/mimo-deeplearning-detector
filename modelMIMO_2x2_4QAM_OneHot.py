@@ -40,6 +40,9 @@ import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import centralized configuration
+from config import *
+
 # Set random seeds for reproducibility
 torch.manual_seed(42)
 np.random.seed(42)
@@ -63,41 +66,33 @@ Configure the MIMO system parameters:
 - **SNR**: Signal-to-Noise Ratio in dB for training (3 dB)
 """
 
-# =====================================
-# MIMO System Parameters
-# =====================================
-N = 100000          # Number of training samples (as in LatinCom paper, Table II)
-M = 4               # Modulation order (4-QAM)
-Nt = 2              # Number of transmit antennas
-Nr = 2              # Number of receive antennas
-SNR_dB = 3          # SNR in dB for training data (NOTE: Random SNR 1-20 dB is used per sample)
-SNR_linear = 10**(SNR_dB/10)  # SNR in linear scale
-No = 1              # Noise power spectral density
-
-# =====================================
 # Neural Network Hyperparameters
-# =====================================
 input_size = 2 * Nr      # Input features: [real(r1), imag(r1), real(r2), imag(r2)]
-hidden_size = 100        # Number of hidden units
 output_size = M ** Nt    # Output classes: M^Nt = 16 for 2x2 MIMO with 4-QAM
-learning_rate = 0.01     # Learning rate (alpha)
-n_epochs = 2000          # Number of training epochs
+n_epochs = NUM_EPOCHS    # Number of training epochs
 train_split = 0.8        # Train/test split ratio
+
+SNR_dB = FIXED_SNR_DB
+SNR_linear = 10**(SNR_dB/10)  # SNR in linear scale
 
 print("="*60)
 print("MIMO System Configuration")
 print("="*60)
 print(f"Modulation: {M}-QAM")
 print(f"MIMO Configuration: {Nt}x{Nr}")
-print(f"Training samples: {N}")
-print(f"SNR for training: {SNR_dB} dB")
+print(f"Training samples: {N_TRAINING_SAMPLES}")
+print(f"SNR mode: {SNR_MODE}")
+if SNR_MODE == 'fixed':
+    print(f"  Fixed SNR: {SNR_dB} dB")
+else:
+    print(f"  Variable SNR: 1-20 dB (random per sample)")
 print(f"Total symbol combinations: {output_size}")
 print(f"\nNeural Network Architecture")
 print("="*60)
 print(f"Input layer: {input_size} neurons")
-print(f"Hidden layer: {hidden_size} neurons (ReLU activation)")
+print(f"Hidden layer: {HIDDEN_SIZE} neurons (ReLU activation)")
 print(f"Output layer: {output_size} neurons (Softmax activation)")
-print(f"Learning rate: {learning_rate}")
+print(f"Learning rate: {LEARNING_RATE}")
 print(f"Epochs: {n_epochs}")
 print("="*60)
 
@@ -159,7 +154,9 @@ plt.ylabel('Quadrature (Imaginary)', fontsize=12)
 plt.title('4-QAM Constellation Diagram', fontsize=14, fontweight='bold')
 plt.axis('equal')
 plt.tight_layout()
-plt.show()
+plt.savefig('training_OneHot_constellation.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("✓ Constellation plot saved to: training_OneHot_constellation.png")
 
 """## 4. Generate Cartesian Product of Symbols
 
@@ -175,8 +172,13 @@ symbol_combinations = torch.tensor(
     device=device
 )
 
+# Apply 1/sqrt(2) normalization - MATLAB standard (Opción A)
+# This normalizes symbol power from 2 to 1 (IEEE standard)
+symbol_combinations = symbol_combinations / np.sqrt(2)
+
 print(f"Total symbol combinations: {len(symbol_combinations)}")
 print(f"Shape: {symbol_combinations.shape}")
+print(f"Average power (after 1/√2 normalization): {torch.mean(torch.abs(symbol_combinations)**2).item():.4f}")
 print(f"\nFirst 5 combinations:")
 for i in range(5):
     print(f"  Combination {i}: {symbol_combinations[i]}")
@@ -204,7 +206,7 @@ Generate training data by:
 5. Creating one-hot encoded labels
 """
 
-def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, device='cpu', use_zf=False):
+def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, device='cpu', use_zf=False, decouple_antennas=False, channel_mode='fixed', snr_mode='variable', fixed_snr_db=3):
     """
     Generates training data for the MIMO detector.
 
@@ -216,7 +218,7 @@ def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, devic
         Nr (int): Number of receive antennas
         Nt (int): Number of transmit antennas
         device (str): Device to use ('cpu' or 'cuda')
-        use_zf (bool): If True, applies Zero-Forcing equalization (default: False to match MATLAB)
+        use_zf (bool): If True, applies Zero-Forcing equalization (default: False )
 
     Returns:
         tuple: (X_data, random_indices) where X_data contains received signals
@@ -228,21 +230,31 @@ def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, devic
     # Randomly select symbol combinations for training
     random_indices = torch.randint(0, len(symbol_combinations), (N,), device=device)
 
-    # FIXED CHANNEL: Same as MATLAB reference (detector_ELM_2x2_all.m lines 55-56)
-    # This ensures all models are trained on the same channel
-    H = torch.tensor([[-0.90064 + 1j*0.43457, -0.99955 + 1j*0.029882],
-                      [-0.1979 + 1j*0.98022, 0.44866 + 1j*0.8937]],
-                     dtype=torch.complex64, device=device)
-    H = H / torch.abs(H)  # Normalize by element-wise magnitude
+    # Channel configuration
+    if channel_mode == 'fixed':
+        # FIXED CHANNEL: Use same channel for all samples (H ~ CN(0,1) standard Rayleigh)
+        H = torch.tensor(FIXED_CHANNEL, dtype=torch.complex64, device=device)
+    else:  # channel_mode == 'random'
+        # RANDOM CHANNEL: Generate ONE random channel and use for ALL samples (channel-specific training)
+        # This trains the network for this specific random channel H
+        H_real = torch.randn((Nr, Nt), device=device) / np.sqrt(2)
+        H_imag = torch.randn((Nr, Nt), device=device) / np.sqrt(2)
+        H = torch.complex(H_real, H_imag)
 
-    # Pre-compute pseudoinverse if using ZF (optimization)
-    if use_zf:
+    # Pre-compute pseudoinverse if using ZF or antenna decoupling (optimization)
+    if use_zf or decouple_antennas:
         H_inv = torch.linalg.pinv(H)
 
     print("Generating training data...")
     print(f"Progress: 0%", end='')
-    print(f"\nUsing FIXED channel H (same as MATLAB reference)")
-    print(f"Zero-Forcing equalization: {'ENABLED' if use_zf else 'DISABLED (matching MATLAB)'}")
+    print(f"\nChannel mode: {channel_mode.upper()}")
+    print(f"SNR mode: {snr_mode.upper()}")
+    if snr_mode == 'fixed':
+        print(f"  Fixed SNR: {fixed_snr_db} dB")
+    else:
+        print(f"  Variable SNR: 1-20 dB (random per sample)")
+    print(f"Zero-Forcing equalization: {'ENABLED' if use_zf else 'DISABLED'}")
+    print(f"Antenna decoupling: {'ENABLED' if decouple_antennas else 'DISABLED'}")
 
     for i in range(N):
         # Progress indicator
@@ -252,27 +264,57 @@ def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, devic
         # Select transmitted symbol combination
         selected_symbols = symbol_combinations[random_indices[i]]
 
-        # FIXED CHANNEL H is used for all samples (NO random channel per iteration)
+        # SNR handling based on mode
+        if snr_mode == 'fixed':
+            # FIXED SNR mode (MATLAB matching):
+            # - SNR is constant for all samples
+            # - Noise is normalized by 1/sqrt(SNR)
+            # - Signal is NOT scaled by sqrt(SNR)
+            SNR_linear_sample = 10.0 ** (fixed_snr_db / 10.0)
 
-        # Random SNR per sample (as in MATLAB: randi(20,1))
-        SNR_dB_sample = np.random.randint(1, 21)  # Random SNR between 1-20 dB
-        SNR_linear_sample = 10.0 ** (SNR_dB_sample / 10.0)
+            n_real = torch.randn(Nr, device=device) * np.sqrt(No/2)
+            n_imag = torch.randn(Nr, device=device) * np.sqrt(No/2)
+            n = torch.complex(n_real, n_imag)
+            n = n / np.sqrt(SNR_linear_sample)  # Normalize noise with 1/sqrt(SNR)
 
-        # Generate AWGN noise: n ~ CN(0, No)
-        n_real = torch.randn(Nr, device=device) * np.sqrt(No/2)
-        n_imag = torch.randn(Nr, device=device) * np.sqrt(No/2)
-        n = torch.complex(n_real, n_imag)
-        n = n / np.sqrt(SNR_linear_sample)  # Scale noise according to random SNR
+            # Received signal: r = H * x + n (no sqrt(SNR) scaling)
+            r_x = torch.matmul(H, selected_symbols) + n
 
-        # Received signal: r = sqrt(SNR) * H * x + n
-        r_x = np.sqrt(SNR_linear_sample) * torch.matmul(H, selected_symbols) + n
+        else:  # snr_mode == 'variable'
+            # VARIABLE SNR mode (IEEE standard):
+            # - SNR is random per sample (0-20 dB continuous)
+            # - Noise has FIXED variance (not normalized by SNR)
+            # - Signal is scaled by sqrt(SNR)
+            SNR_dB_sample = np.random.uniform(0, 20)  # Random SNR between 0-20 dB (continuous)
+            SNR_linear_sample = 10.0 ** (SNR_dB_sample / 10.0)
 
-        # Apply Zero-Forcing equalization if enabled
-        if use_zf:
-            # Channel equalization using pseudo-inverse (Zero-Forcing): r_eq = H^+ * r
+            n_real = torch.randn(Nr, device=device) * np.sqrt(No/2)
+            n_imag = torch.randn(Nr, device=device) * np.sqrt(No/2)
+            n = torch.complex(n_real, n_imag)
+            # DO NOT normalize noise by SNR
+
+            # Received signal: r = sqrt(SNR) * H * x + n
+            r_x = np.sqrt(SNR_linear_sample) * torch.matmul(H, selected_symbols) + n
+
+        # Apply preprocessing based on configuration
+        if decouple_antennas:
+            # Francisco's preprocessing: Apply H⁺ to decouple antennas
+            # The approach depends on SNR mode to match evaluation:
+            if snr_mode == 'variable':
+                # SNR VARIABLE: Apply H⁺ on r_x (which already has sqrt(SNR))
+                # r = H⁺ * (sqrt(SNR)*H*x + n) = sqrt(SNR)*x + H⁺*n
+                r_processed = torch.matmul(H_inv, r_x)
+            else:  # snr_mode == 'fixed'
+                # SNR FIXED (MATLAB): Apply H⁺ on H*x, THEN add normalized noise
+                # r = H⁺ * (H*x) + n/sqrt(SNR) = x + n/sqrt(SNR)
+                r_temp = torch.matmul(H, selected_symbols)  # Apply channel (no noise yet)
+                r_eq = torch.matmul(H_inv, r_temp)           # Eliminate channel: H⁺ * H * x ≈ x
+                r_processed = r_eq + n                        # Add noise AFTER (n is already normalized in fixed mode)
+        elif use_zf:
+            # Standard Zero-Forcing: r_eq = H⁺ * (H*x + n) = x + H⁺*n
             r_processed = torch.matmul(H_inv, r_x)
         else:
-            # Use received signal directly (matching MATLAB default behavior)
+            # Use received signal directly (default behavior)
             r_processed = r_x
 
         # Store real and imaginary parts: [real(r1), imag(r1), real(r2), imag(r2)]
@@ -283,18 +325,14 @@ def generate_training_data(N, symbol_combinations, SNR_linear, No, Nr, Nt, devic
 
     print("\rProgress: 100% - Complete!")
 
-    return X_data, random_indices
+    return X_data, random_indices, H
 
-
-# =====================================
-# Configuration Parameters
-# =====================================
-USE_ZF = False    # Zero-Forcing equalization: False = no ZF (matching MATLAB), True = with ZF
-USE_BIAS = False  # Bias in hidden layer: False = no bias (matching MATLAB b_oh=0), True = with bias
 
 # Generate training data
-X_data, random_indices = generate_training_data(
-    N, symbol_combinations, SNR_linear, No, Nr, Nt, device, use_zf=USE_ZF
+X_data, random_indices, H_training = generate_training_data(
+    N_TRAINING_SAMPLES, symbol_combinations, SNR_linear, No, Nr, Nt, device,
+    use_zf=USE_ZF, decouple_antennas=DECOUPLE_ANTENNAS, channel_mode=CHANNEL_MODE,
+    snr_mode=SNR_MODE, fixed_snr_db=FIXED_SNR_DB
 )
 
 print(f"\nGenerated data shape: {X_data.shape}")
@@ -331,19 +369,15 @@ Normalize the input data to have zero mean and unit variance.
 This improves training convergence and stability.
 """
 
-# Normalize data: zero mean and unit variance
-X_mean = X_data.mean()
-X_std = X_data.std()
+X_mean = torch.tensor(0.0)
+X_std = torch.tensor(1.0)
 
-print("Before normalization:")
-print(f"  Mean: {X_mean.item():.6f}")
-print(f"  Std:  {X_std.item():.6f}")
+print("Normalization skipped for Variable SNR training.")
+X_data_normalized = X_data
 
-X_data_normalized = (X_data - X_mean) / X_std
-
-print("\nAfter normalization:")
-print(f"  Mean: {X_data_normalized.mean().item():.6e}")
-print(f"  Std:  {X_data_normalized.std().item():.6f}")
+print("Data statistics:")
+print(f"  Mean: {X_data.mean().item():.6f}")
+print(f"  Std:  {X_data.std().item():.6f}")
 
 # Visualize data distribution before and after normalization
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -367,7 +401,9 @@ axes[1].axvline(0, color='red', linestyle='--', linewidth=2, label='Mean = 0')
 axes[1].legend()
 
 plt.tight_layout()
-plt.show()
+plt.savefig('training_OneHot_data_distribution.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("✓ Data distribution plot saved to: training_OneHot_data_distribution.png")
 
 """## 8. Train-Test Split
 
@@ -375,8 +411,8 @@ Split the dataset into training (80%) and testing (20%) sets.
 """
 
 # Calculate split index
-train_qty = int(train_split * N)
-test_qty = N - train_qty
+train_qty = int(train_split * N_TRAINING_SAMPLES)
+test_qty = N_TRAINING_SAMPLES - train_qty
 
 # Split data
 X_train = X_data_normalized[:train_qty]
@@ -419,7 +455,7 @@ class MIMO_Detector(nn.Module):
 
     Args:
         use_sigmoid_hidden (bool): If True, applies sigmoid before ReLU in hidden layer (default: False)
-        use_bias (bool): If True, uses bias in hidden layer (default: False to match MATLAB)
+        use_bias (bool): If True, uses bias in hidden layer (default: False )
     """
 
     def __init__(self, input_size, hidden_size, output_size, use_sigmoid_hidden=False, use_bias=False):
@@ -427,7 +463,7 @@ class MIMO_Detector(nn.Module):
 
         self.use_sigmoid_hidden = use_sigmoid_hidden
 
-        # Define layers (bias=False to match MATLAB: b_oh = 0)
+        # Define layers (bias=False : b_oh = 0)
         self.layer1 = nn.Linear(input_size, hidden_size, bias=use_bias)
         self.layer2 = nn.Linear(hidden_size, output_size)
 
@@ -458,7 +494,7 @@ class MIMO_Detector(nn.Module):
         # Hidden layer activation
         x = self.layer1(x)
         if self.use_sigmoid_hidden:
-            x = torch.sigmoid(x)  # Optional sigmoid (for MATLAB compatibility with DSE/OHA)
+            x = torch.sigmoid(x)  # Optional sigmoid
         x = F.relu(x)  # ReLU activation
 
         # Output layer (logits, softmax applied in loss function)
@@ -470,9 +506,9 @@ class MIMO_Detector(nn.Module):
 # Instantiate the model with configuration parameters
 model = MIMO_Detector(
     input_size,
-    hidden_size,
+    HIDDEN_SIZE,
     output_size,
-    use_sigmoid_hidden=False,  # One-Hot uses only ReLU (matching MATLAB line 116)
+    use_sigmoid_hidden=False,  # One-Hot uses only ReLU
     use_bias=USE_BIAS
 ).to(device)
 
@@ -494,7 +530,7 @@ print("="*60)
 """## 10. Define Loss Function and Optimizer
 
 - **Loss Function**: CrossEntropyLoss (combines Softmax and NLLLoss)
-- **Optimizer**: SGD with momentum=0 (equivalent to vanilla SGD as in MATLAB)
+- **Optimizer**: SGD with momentum=0 (equivalent to vanilla SGD as in LatinCom 2025 paper)
 
 Note: PyTorch's CrossEntropyLoss expects class indices, not one-hot vectors.
 """
@@ -503,23 +539,23 @@ Note: PyTorch's CrossEntropyLoss expects class indices, not one-hot vectors.
 # Note: CrossEntropyLoss includes softmax, so we don't apply it in the model
 criterion = nn.CrossEntropyLoss()
 
-# Define optimizer (SGD to match MATLAB implementation)
+# Define optimizer (SGD  implementation)
 # Using SGD with momentum=0 is equivalent to vanilla SGD
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0)
+optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0)
 
 print("="*60)
 print("Training Configuration")
 print("="*60)
 print(f"Loss function: CrossEntropyLoss")
 print(f"Optimizer: SGD")
-print(f"Learning rate: {learning_rate}")
+print(f"Learning rate: {LEARNING_RATE}")
 print(f"Momentum: 0 (vanilla SGD)")
 print("="*60)
 
 """## 11. Training Loop
 
 Train the neural network using full-batch gradient descent.
-This matches the MATLAB implementation which trains on the entire dataset at once.
+This matches the LatinCom 2025 paper implementation which trains on the entire dataset at once.
 """
 
 # Move data to device
@@ -640,7 +676,9 @@ axes[1].legend(fontsize=11)
 axes[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.show()
+plt.savefig('training_OneHot_curves.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("✓ Training curves plot saved to: training_OneHot_curves.png")
 
 # Print summary statistics
 print("\nTraining Summary:")
@@ -698,7 +736,9 @@ plt.ylabel('True Label', fontsize=12, fontweight='bold')
 plt.title('Confusion Matrix - MIMO Detector (One-Hot Encoding)',
           fontsize=14, fontweight='bold')
 plt.tight_layout()
-plt.show()
+plt.savefig('training_OneHot_confusion_matrix.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("✓ Confusion matrix plot saved to: training_OneHot_confusion_matrix.png")
 
 # Calculate per-class accuracy
 print("\nPer-Class Accuracy:")
@@ -727,9 +767,9 @@ checkpoint = {
     'optimizer_state_dict': optimizer.state_dict(),
     'hyperparameters': {
         'input_size': input_size,
-        'hidden_size': hidden_size,
+        'hidden_size': HIDDEN_SIZE,
         'output_size': output_size,
-        'learning_rate': learning_rate,
+        'learning_rate': LEARNING_RATE,
         'n_epochs': n_epochs,
         'train_split': train_split
     },
@@ -738,7 +778,14 @@ checkpoint = {
         'Nt': Nt,
         'Nr': Nr,
         'SNR_dB': SNR_dB,
-        'N': N
+        'N': N_TRAINING_SAMPLES
+    },
+    'configuration': {
+        'channel_mode': CHANNEL_MODE,
+        'snr_mode': SNR_MODE,
+        'use_zf': USE_ZF,
+        'decouple_antennas': DECOUPLE_ANTENNAS,
+        'use_bias': USE_BIAS
     },
     'training_history': {
         'train_loss': train_loss_history,
@@ -755,7 +802,8 @@ checkpoint = {
     'normalization_params': {
         'mean': X_mean.item(),
         'std': X_std.item()
-    }
+    },
+    'training_channel': H_training.cpu()  # Save the training channel H for evaluation
 }
 
 # Save the checkpoint
@@ -784,11 +832,13 @@ Demonstrate how to load the saved model and verify it produces the same results.
 # Load the saved model
 loaded_checkpoint = torch.load(model_save_path)
 
-# Create a new model instance
+# Create a new model instance with matching configuration
 loaded_model = MIMO_Detector(
     loaded_checkpoint['hyperparameters']['input_size'],
     loaded_checkpoint['hyperparameters']['hidden_size'],
-    loaded_checkpoint['hyperparameters']['output_size']
+    loaded_checkpoint['hyperparameters']['output_size'],
+    use_sigmoid_hidden=False,  # One-Hot uses only ReLU
+    use_bias=loaded_checkpoint['configuration']['use_bias']  # Match training config
 ).to(device)
 
 # Load the saved weights
@@ -818,7 +868,7 @@ print("="*60)
 
 """## 16. Summary and Conclusions
 
-This notebook successfully implements a Deep Learning-based detector for a 2x2 MIMO system using one-hot encoding strategy. The implementation closely follows the MATLAB code from the paper while leveraging PyTorch's high-level API.
+This notebook successfully implements a Deep Learning-based detector for a 2x2 MIMO system using one-hot encoding strategy. The implementation closely follows the LatinCom 2025 paper code from the paper while leveraging PyTorch's high-level API.
 
 ### Key Features:
 1. **Data Generation**: Realistic MIMO channel simulation with Rayleigh fading and AWGN

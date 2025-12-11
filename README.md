@@ -93,7 +93,8 @@ r = √SNR · H · x + n
 
 - **H**: Canal fijo normalizado
 - **x**: Símbolos 4-QAM transmitidos
-- **n**: Ruido AWGN (varianza fija)
+- **n**: Ruido AWGN ~ CN(0, 1) con **varianza fija** (no escalado por SNR)
+- **SNR**: Controlado únicamente escalando la señal, no el ruido
 
 ---
 
@@ -137,6 +138,11 @@ python modelMIMO_2x2_4QAM_LabelEncoder.py
 python modelMIMO_2x2_4QAM_DoubleOneHot.py
 ```
 
+**Características del entrenamiento:**
+- ✅ **SNR Variable**: 1-20 dB aleatorio por muestra
+- ✅ **Sin normalización de datos**: Red aprende magnitudes reales
+- ✅ **Ruido sin escalar**: `n ~ CN(0, 1)` con varianza fija
+
 **Salida:** Modelos guardados en raíz del proyecto
 - `modelMIMO_2x2_4QAM_OneHot.pth`
 - `modelMIMO_2x2_4QAM_LabelEncoder.pth`
@@ -157,10 +163,15 @@ USE_BIAS = False  # Matching MATLAB
 
 **⚠️ IMPORTANTE:** `USE_ZF` y `USE_BIAS` deben coincidir con la configuración usada en entrenamiento.
 
-**Salidas:**
-- `BER_MIMO_2x2_4QAM.png` - Gráfica BER
+**Monitoreo en tiempo real:**
+- Durante la simulación se guarda `BER_MIMO_2x2_4QAM_progress.png` (actualizado cada SNR)
+- Puedes abrir/refrescar este archivo para ver el progreso sin interrumpir la ejecución
+- Se elimina automáticamente al finalizar
+
+**Salidas finales:**
+- `BER_MIMO_2x2_4QAM.png` - Gráfica BER final
 - `BER_results_MIMO_2x2.npy` - Datos NumPy
-- `BER_results_MIMO_2x2.txt` - Tabla texto
+- `BER_results_MIMO_2x2.txt` - Tabla texto con tiempos por SNR
 
 ### 3. Cambiar Configuración
 

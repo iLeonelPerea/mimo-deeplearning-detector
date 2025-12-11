@@ -50,6 +50,9 @@ import sys
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import centralized configuration
+from config import *
+
 # Disable torch.compile() and dynamo completely (not compatible with Windows/no Triton)
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
@@ -73,30 +76,17 @@ if device == 'cuda':
 
 """## 2. Define System Parameters"""
 
-# =====================================
-# MIMO System Parameters
-# =====================================
-M = 4                    # Modulation order (4-QAM)
-Nt = 2                   # Number of transmit antennas
-Nr = 2                   # Number of receive antennas
+# System parameters from config
 bits_per_symbol = int(np.log2(M))  # Bits per symbol
 
-# =====================================
 # BER Simulation Parameters
-# =====================================
-n_iter = int(1e6)      # 1 million iterations (~7.5 hours)
-snr_step = 1           # 26 SNR points (0, 1, 2, ..., 25)
+n_iter = N_MONTE_CARLO  # Monte Carlo iterations from config
+snr_step = SNR_STEP_DB  # SNR step from config
 
-SNR_dB = np.arange(0, 26, snr_step)  # SNR range from 0 to 25 dB
-
-# =====================================
-# Configuration Parameters
-# =====================================
-USE_ZF = False    # Zero-Forcing equalization: False = no ZF (matching MATLAB), True = with ZF
-USE_BIAS = False  # Bias in hidden layer: False = no bias (matching MATLAB b_oh=0), True = with bias
+SNR_dB = np.arange(SNR_MIN_DB, SNR_MAX_DB + 1, snr_step)  # SNR range from config
 
 print("="*70)
-print("BER Simulation Configuration - FULL SIMULATION")
+print("BER Simulation Configuration")
 print("="*70)
 print(f"MIMO Configuration: {Nt}x{Nr}")
 print(f"Modulation: {M}-QAM")
@@ -106,22 +96,27 @@ print(f"SNR range: {SNR_dB[0]} to {SNR_dB[-1]} dB (step: {snr_step} dB)")
 print(f"SNR points: {len(SNR_dB)}")
 print(f"Monte Carlo iterations: {n_iter:,}")
 print(f"Total simulations: {len(SNR_dB) * n_iter:,}")
-print(f"\nConfiguration:")
-print(f"  Zero-Forcing Equalization: {'ENABLED' if USE_ZF else 'DISABLED (matching MATLAB)'}")
-print(f"  Hidden Layer Bias: {'ENABLED' if USE_BIAS else 'DISABLED (matching MATLAB b_oh=0)'}")
+print(f"\n⚠️  CONSISTENCY CHECK - Training vs Detection:")
+print(f"  Channel Mode:           {CHANNEL_MODE.upper()}")
+print(f"  Zero-Forcing:           {'ENABLED' if USE_ZF else 'DISABLED'}")
+print(f"  Antenna Decoupling:     {'ENABLED' if DECOUPLE_ANTENNAS else 'DISABLED'}")
+print(f"  Hidden Layer Bias:      {'ENABLED' if USE_BIAS else 'DISABLED'}")
 print("="*70)
 
 """## 3. Generate QAM Constellation and Symbol Combinations"""
 
 def generate_qam_constellation(M):
     """
-    Generates M-QAM constellation symbols with normalization.
+    Generates M-QAM constellation symbols (standard, without normalization).
+
+    This matches the MATLAB qammod() function and Andrés' notebook behavior:
+    4-QAM: [-1-1j, -1+1j, 1-1j, 1+1j] with average power = 2
 
     Args:
         M (int): Modulation order
 
     Returns:
-        torch.Tensor: Normalized QAM constellation symbols
+        torch.Tensor: QAM constellation symbols (unnormalized, power = 2)
     """
     # Generate basic QAM constellation
     qam_idx = torch.arange(M)
@@ -130,26 +125,18 @@ def generate_qam_constellation(M):
     imag_part = 2 * torch.floor(qam_idx.float() / c) - c + 1
     qam_symbols = torch.complex(real_part.float(), imag_part.float())
 
-    # Normalization factor for 4-QAM
-    FN = 1.0 / np.sqrt((2.0/3.0) * (M - 1))
-    qam_symbols = FN * qam_symbols
-
-    # Additional power normalization
-    power_sum = 0.0
-    for symbol in qam_symbols:
-        power_sum += np.sqrt(symbol.real.item()**2 + symbol.imag.item()**2)
-    avg_power = power_sum / M
-    qam_symbols = qam_symbols / avg_power
-
+    # Return unnormalized symbols (matching training data generation)
+    # No normalization applied - models were trained with power = 2 symbols
     return qam_symbols
 
 
-# Generate normalized QAM constellation
+# Generate QAM constellation (standard, unnormalized)
 qam_symbols = generate_qam_constellation(M)
 
-print("Normalized 4-QAM Constellation:")
+print("4-QAM Constellation (Standard, Unnormalized):")
 for i, symbol in enumerate(qam_symbols):
     print(f"  Symbol {i}: {symbol.real.item():+.4f} {symbol.imag.item():+.4f}j")
+print(f"Average power: {torch.mean(torch.abs(qam_symbols)**2).item():.4f}")
 
 # Generate all possible symbol combinations (Cartesian product)
 symbol_combinations = torch.tensor(
@@ -158,11 +145,15 @@ symbol_combinations = torch.tensor(
     device=device
 )
 
-# Apply normalization factor for transmission
+# Apply normalization factor 1/sqrt(2) - MATLAB standard (Opción A)
+# This matches: C = (1/sqrt(2))*prod_cart; (línea 181 del MATLAB)
+# Normalizes average symbol power from 2 to 1 (IEEE standard)
 symbol_combinations_tx = symbol_combinations / np.sqrt(2)
 
 print(f"\nTotal symbol combinations: {len(symbol_combinations)}")
 print(f"Shape: {symbol_combinations.shape}")
+print(f"Average power before normalization: {torch.mean(torch.abs(symbol_combinations)**2).item():.4f}")
+print(f"Average power after 1/√2 normalization: {torch.mean(torch.abs(symbol_combinations_tx)**2).item():.4f}")
 
 # Generate symbol indices for reference
 qam_idx = torch.arange(M, device=device)
@@ -194,7 +185,7 @@ class MIMO_Detector(nn.Module):
 
     Args:
         use_sigmoid_hidden (bool): If True, applies sigmoid before ReLU in hidden layer
-        use_bias (bool): If True, uses bias in hidden layer (default: False to match MATLAB)
+        use_bias (bool): If True, uses bias in hidden layer (default: False)
     """
 
     def __init__(self, input_size, hidden_size, output_size, use_sigmoid_hidden=False, use_bias=False):
@@ -225,11 +216,11 @@ Load the three pre-trained models:
 3. **Model 3**: One-hot per antenna (8 outputs)
 """
 
-# Model file paths
+# Model file paths from config
 model_paths = [
-    'modelMIMO_2x2_4QAM_OneHot.pth',
-    'modelMIMO_2x2_4QAM_LabelEncoder.pth',
-    'modelMIMO_2x2_4QAM_DoubleOneHot.pth'
+    MODEL_PATH_ONEHOT,
+    MODEL_PATH_LABEL_ENCODER,
+    MODEL_PATH_DOUBLE_ONEHOT
 ]
 
 # Output sizes for each strategy
@@ -241,6 +232,7 @@ output_sizes = [
 
 # Load models
 models = []
+training_channels = []  # Store training channels for each model (used when CHANNEL_MODE='random')
 model_names = [
     'One-Hot Encoding',
     'Label Encoder',
@@ -262,10 +254,10 @@ for i, (model_path, output_size, name) in enumerate(zip(model_paths, output_size
         # One-Hot Per Antenna (i=2): Sigmoid + ReLU
         use_sigmoid_hidden = (i != 0)  # False for One-Hot, True for others
 
-        # Create model instance with matching configuration
+        # Create model instance with matching configuration (using config values)
         model = MIMO_Detector(
             input_size=4,
-            hidden_size=100,
+            hidden_size=HIDDEN_SIZE,
             output_size=output_size,
             use_sigmoid_hidden=use_sigmoid_hidden,
             use_bias=USE_BIAS
@@ -279,9 +271,35 @@ for i, (model_path, output_size, name) in enumerate(zip(model_paths, output_size
         # GPU acceleration via CUDA works without compilation
 
         models.append(model)
+
+        # Extract training channel (for CHANNEL_MODE='random')
+        if 'training_channel' in checkpoint:
+            H_train = checkpoint['training_channel'].to(device)
+            training_channels.append(H_train)
+        else:
+            training_channels.append(None)  # Old checkpoint without training_channel
+
         print(f"[OK] Model {i+1} ({name}): Loaded successfully")
         print(f"  - Output size: {output_size}")
         print(f"  - Test accuracy: {checkpoint['final_metrics']['final_test_accuracy']:.4f}")
+
+        # Check configuration consistency (if available in checkpoint)
+        if 'configuration' in checkpoint:
+            train_config = checkpoint['configuration']
+            inconsistencies = []
+
+            if train_config.get('use_zf', False) != USE_ZF:
+                inconsistencies.append(f"USE_ZF: trained={train_config.get('use_zf')}, current={USE_ZF}")
+            if train_config.get('decouple_antennas', False) != DECOUPLE_ANTENNAS:
+                inconsistencies.append(f"DECOUPLE_ANTENNAS: trained={train_config.get('decouple_antennas')}, current={DECOUPLE_ANTENNAS}")
+            if train_config.get('use_bias', False) != USE_BIAS:
+                inconsistencies.append(f"USE_BIAS: trained={train_config.get('use_bias')}, current={USE_BIAS}")
+
+            if inconsistencies:
+                print(f"  ⚠️  WARNING: Configuration mismatch detected!")
+                for msg in inconsistencies:
+                    print(f"      {msg}")
+                print(f"      This may affect detection performance!")
 
         # Measure GPU memory footprint for this model
         torch.cuda.reset_peak_memory_stats()
@@ -319,23 +337,31 @@ Implement detection functions for:
 - Deep Learning detectors (3 strategies)
 """
 
-def maximum_likelihood_detector(r, Hs_precomputed, sqrt_SNR):
+def maximum_likelihood_detector(r, Hs_precomputed, sqrt_SNR, snr_mode='variable'):
     """
     Maximum Likelihood detector (optimized with pre-computed H*s).
 
-    ML detection: finds argmin ||r - sqrt(SNR)*H*s||^2 over all possible s
+    ML detection: finds argmin ||r - H*s||^2 or ||r - sqrt(SNR)*H*s||^2 depending on SNR mode
 
     Args:
         r (torch.Tensor): Received signal (Nr,)
         Hs_precomputed (torch.Tensor): Pre-computed H @ s.T for all symbols (M^Nt, Nr)
         sqrt_SNR (float): Square root of SNR in linear scale
+        snr_mode (str): 'variable' or 'fixed' (must match training configuration)
 
     Returns:
         int: Detected symbol combination index (1-indexed)
     """
-    # Calculate distances: ||r - sqrt(SNR)*H*s||^2
-    # Hs_precomputed already contains all H*s products
-    distances = torch.abs(r - sqrt_SNR * Hs_precomputed)**2  # (M^Nt, Nr)
+    # Calculate distances based on SNR mode (must match signal generation)
+    if snr_mode == 'fixed':
+        # FIXED SNR mode: r = H*x + n/sqrt(SNR)
+        # ML metric: ||r - H*s||^2
+        distances = torch.abs(r - Hs_precomputed)**2  # (M^Nt, Nr)
+    else:  # snr_mode == 'variable'
+        # VARIABLE SNR mode: r = sqrt(SNR)*H*x + n
+        # ML metric: ||r - sqrt(SNR)*H*s||^2
+        distances = torch.abs(r - sqrt_SNR * Hs_precomputed)**2  # (M^Nt, Nr)
+
     distances = distances.sum(dim=1)  # Sum over receive antennas
 
     # Find minimum distance
@@ -343,7 +369,7 @@ def maximum_likelihood_detector(r, Hs_precomputed, sqrt_SNR):
     return idx
 
 
-def dl_detector_onehot(model, r, device, H_inv=None, use_zf=False):
+def dl_detector_onehot(model, r, device, H_inv=None, use_zf=False, decouple_antennas=False):
     """
     Deep Learning detector with one-hot encoding.
 
@@ -351,14 +377,16 @@ def dl_detector_onehot(model, r, device, H_inv=None, use_zf=False):
         model: Trained neural network
         r (torch.Tensor): Received signal
         device: CPU or CUDA device
-        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for ZF)
+        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for preprocessing)
         use_zf (bool): If True, applies Zero-Forcing equalization
+        decouple_antennas (bool): If True, applies antenna decoupling preprocessing
 
     Returns:
         int: Detected symbol combination index (1-indexed)
     """
-    # Apply Zero-Forcing equalization if enabled
-    if use_zf and H_inv is not None:
+    # Apply preprocessing if enabled (matches training configuration)
+    # Both USE_ZF and DECOUPLE_ANTENNAS require H⁺ equalization
+    if (use_zf or decouple_antennas) and H_inv is not None:
         r_processed = H_inv @ r
     else:
         r_processed = r
@@ -378,7 +406,7 @@ def dl_detector_onehot(model, r, device, H_inv=None, use_zf=False):
     return idx
 
 
-def dl_detector_label_encoder(model, r, idx_sign, device, H_inv=None, use_zf=False):
+def dl_detector_label_encoder(model, r, idx_sign, device, H_inv=None, use_zf=False, decouple_antennas=False):
     """
     Deep Learning detector with label/symbol encoding.
 
@@ -387,14 +415,16 @@ def dl_detector_label_encoder(model, r, idx_sign, device, H_inv=None, use_zf=Fal
         r (torch.Tensor): Received signal (already on GPU)
         idx_sign (torch.Tensor): Sign-based encoding matrix
         device: CPU or CUDA device
-        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for ZF)
+        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for preprocessing)
         use_zf (bool): If True, applies Zero-Forcing equalization
+        decouple_antennas (bool): If True, applies antenna decoupling preprocessing
 
     Returns:
         int: Detected symbol combination index (1-indexed)
     """
-    # Apply Zero-Forcing equalization if enabled
-    if use_zf and H_inv is not None:
+    # Apply preprocessing if enabled (matches training configuration)
+    # Both USE_ZF and DECOUPLE_ANTENNAS require H⁺ equalization
+    if (use_zf or decouple_antennas) and H_inv is not None:
         r_processed = H_inv @ r
     else:
         r_processed = r
@@ -421,7 +451,7 @@ def dl_detector_label_encoder(model, r, idx_sign, device, H_inv=None, use_zf=Fal
             return 1  # Default to first symbol if no match
 
 
-def dl_detector_onehot_per_antenna(model, r, symbol_indices, device, H_inv=None, use_zf=False):
+def dl_detector_onehot_per_antenna(model, r, symbol_indices, device, H_inv=None, use_zf=False, decouple_antennas=False):
     """
     Deep Learning detector with one-hot encoding per antenna.
 
@@ -430,14 +460,16 @@ def dl_detector_onehot_per_antenna(model, r, symbol_indices, device, H_inv=None,
         r (torch.Tensor): Received signal (already on GPU)
         symbol_indices (torch.Tensor): Symbol index combinations
         device: CPU or CUDA device
-        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for ZF)
+        H_inv (torch.Tensor): Pseudoinverse of channel matrix (optional, for preprocessing)
         use_zf (bool): If True, applies Zero-Forcing equalization
+        decouple_antennas (bool): If True, applies antenna decoupling preprocessing
 
     Returns:
         int: Detected symbol combination index (1-indexed)
     """
-    # Apply Zero-Forcing equalization if enabled
-    if use_zf and H_inv is not None:
+    # Apply preprocessing if enabled (matches training configuration)
+    # Both USE_ZF and DECOUPLE_ANTENNAS require H⁺ equalization
+    if (use_zf or decouple_antennas) and H_inv is not None:
         r_processed = H_inv @ r
     else:
         r_processed = r
@@ -543,30 +575,45 @@ print()
 start_time_simulation = time.time()
 total_detections = 0
 
-# FIXED CHANNEL: Same channel used during training for fair comparison
-H_fixed = torch.tensor([[-0.90064 + 1j*0.43457, -0.99955 + 1j*0.029882],
-                        [-0.1979 + 1j*0.98022, 0.44866 + 1j*0.8937]],
-                       dtype=torch.complex64, device=device)
-H_fixed = H_fixed / torch.abs(H_fixed)  # Normalize by element-wise magnitude
+# Channel configuration for BER evaluation
+if CHANNEL_MODE == 'fixed':
+    # FIXED CHANNEL MODE: Use same channel for all iterations
+    H_fixed = torch.tensor(FIXED_CHANNEL, dtype=torch.complex64, device=device)
 
-# Compute pseudoinverse if Zero-Forcing is enabled (configuration option)
-# When enabled, it's computed once before the loop for efficiency
-if USE_ZF:
-    H_inv_fixed = torch.linalg.pinv(H_fixed)
+    # Compute pseudoinverse for ZF or antenna decoupling preprocessing
+    # When USE_ZF or DECOUPLE_ANTENNAS is enabled, computed once before the loop for efficiency
+    if USE_ZF or DECOUPLE_ANTENNAS:
+        H_inv_fixed = torch.linalg.pinv(H_fixed)
+    else:
+        H_inv_fixed = None  # Not used when preprocessing is disabled
+
+    # Pre-compute H*s products for ML detector (H is fixed, so this is constant)
+    # symbol_combinations_tx: (16, 2), H_fixed: (2, 2)
+    # Result: (16, 2) - all possible H @ s products
+    Hs_fixed = symbol_combinations_tx @ H_fixed.T  # (16, 2) @ (2, 2) = (16, 2)
+
+    print(f"Using FIXED channel H for all evaluations:")
+    print(f"H = \n{H_fixed}")
 else:
-    H_inv_fixed = None  # Not used when ZF is disabled (matching MATLAB)
+    # RANDOM CHANNEL MODE (Channel-Specific): Use training channels from checkpoints
+    # Each model uses the SAME random channel it was trained with
+    print(f"Using RANDOM channel mode (Channel-Specific):")
+    print(f"  - Each model uses the random channel it was trained with")
+    print(f"  - Channels loaded from model checkpoints")
 
-# Pre-compute H*s products for ML detector (H is fixed, so this is constant)
-# symbol_combinations_tx: (16, 2), H_fixed: (2, 2)
-# Result: (16, 2) - all possible H @ s products
-Hs_fixed = symbol_combinations_tx @ H_fixed.T  # (16, 2) @ (2, 2) = (16, 2)
-
-print(f"Using FIXED channel H for all evaluations:")
-print(f"H = \n{H_fixed}")
+    # Display training channels for each model
+    for i, (name, H) in enumerate(zip(model_names, training_channels)):
+        if H is not None:
+            print(f"\nModel {i+1} ({name}) training channel:")
+            print(f"H_{i+1} =")
+            print(H)
+        else:
+            print(f"\n⚠️  WARNING: Model {i+1} ({name}) has no training_channel in checkpoint!")
+            print(f"    This model was trained with an old version. Please retrain.")
 print()
 
-# Setup interactive plotting (will be initialized after first SNR point)
-plt.ion()  # Turn on interactive mode
+# Setup non-interactive plotting (save to file instead of displaying)
+plt.ioff()
 fig = None
 ax = None
 
@@ -609,47 +656,71 @@ for j, SNR_j in snr_pbar:
         idx_sel = np.random.randint(1, 17)  # Random index between 1-16 (1-indexed)
         x_transmitted = symbol_combinations_tx[idx_sel - 1]  # 0-indexed for Python
 
-        # Generate AWGN noise with FIXED unit variance (standard MIMO model)
-        # This matches LatinCom paper (Eq. 2): rk = √γk * Hk * s + nk
-        # where nk ~ CN(0, σ²) with FIXED variance (does NOT depend on SNR)
-        #
-        # Optimization 2: Generate complex noise directly (1.5-2x faster than separate real/imag)
+        # Channel generation based on CHANNEL_MODE
+        if CHANNEL_MODE == 'fixed':
+            # FIXED CHANNEL: Use pre-computed channel and H*s products
+            H_current = H_fixed
+            H_inv_current = H_inv_fixed
+            Hs_current = Hs_fixed
+        else:  # CHANNEL_MODE == 'random'
+            # RANDOM CHANNEL (Channel-Specific): Use training channel from first model
+            # All detectors (ML + all DL models) operate on the same channel for fair comparison
+            # We use the training channel from the first model (One-Hot Encoding)
+            H_current = training_channels[0]
+
+            # Compute pseudoinverse for this channel if needed
+            H_inv_current = torch.linalg.pinv(H_current) if (USE_ZF or DECOUPLE_ANTENNAS) else None
+
+            # Pre-compute H*s products for ML detector for this channel
+            Hs_current = symbol_combinations_tx @ H_current.T  # (16, 2) @ (2, 2) = (16, 2)
+
+        # Generate AWGN noise (approach depends on SNR_MODE to match training)
+        # Optimization: Generate complex noise directly (1.5-2x faster than separate real/imag)
         # PyTorch's randn with complex dtype generates real and imaginary parts independently
         # Each component has variance 1/2, so total power = 1/2 + 1/2 = 1
         n = torch.randn(Nr, dtype=torch.complex64, device=device) / np.sqrt(2)
 
-        # CRITICAL: DO NOT scale noise by SNR
-        # The standard MIMO model uses FIXED noise variance
-        # SNR is controlled ONLY by scaling the signal, NOT the noise
-        # Previous incorrect implementation: n = n * inv_sqrt_SNR_j (REMOVED)
-
-        # Received signal: r = sqrt(SNR) * H * x + n
-        # This is the standard model used in all scientific literature:
-        # - Shannon (1948), Telatar (1999), Foschini & Gans (1998)
-        # - IEEE 802.11, 3GPP LTE/5G standards
-        # - LatinCom (2025), Sensors MDPI (2024), Low Complexity (2007)
-        r = sqrt_SNR_j * (H_fixed @ x_transmitted) + n
+        # Generate received signal based on SNR mode (must match training configuration)
+        if SNR_MODE == 'fixed':
+            # FIXED SNR mode (MATLAB matching):
+            # - Noise is normalized by 1/sqrt(SNR)
+            # - Signal is NOT scaled by sqrt(SNR)
+            # r = H * x + n/sqrt(SNR)
+            n_normalized = n / sqrt_SNR_j
+            r = (H_current @ x_transmitted) + n_normalized
+        else:  # SNR_MODE == 'variable'
+            # VARIABLE SNR mode (IEEE standard):
+            # - Noise has FIXED variance (not normalized)
+            # - Signal is scaled by sqrt(SNR)
+            # r = sqrt(SNR) * H * x + n
+            # This is the standard model used in scientific literature:
+            # - Shannon (1948), Telatar (1999), Foschini & Gans (1998)
+            # - IEEE 802.11, 3GPP LTE/5G standards
+            # - LatinCom (2025), Sensors MDPI (2024), Low Complexity (2007)
+            r = sqrt_SNR_j * (H_current @ x_transmitted) + n
 
         # ==========================================
         # Maximum Likelihood Detector
         # ==========================================
         # ML uses the raw received signal and pre-computed H*s products
-        idx_ml = maximum_likelihood_detector(r, Hs_fixed, sqrt_SNR_j)
+        # Metric must match the signal generation model (depends on SNR_MODE)
+        idx_ml = maximum_likelihood_detector(r, Hs_current, sqrt_SNR_j, SNR_MODE)
         if idx_ml != idx_sel:
             bit_errors_ml += count_bit_errors(idx_sel - 1, idx_ml - 1)
 
         # ==========================================
-        # DL Detectors: Optional Zero-Forcing Equalization
+        # DL Detectors: Apply Preprocessing (matching training configuration)
         # ==========================================
-        # Note: ZF equalization is controlled by USE_ZF configuration parameter
-        # When USE_ZF=False (default), matches MATLAB behavior (detector_ELM_2x2_all.m)
-        # When USE_ZF=True, applies H^+ equalization before detection
+        # Preprocessing is controlled by config parameters:
+        # - USE_ZF: Standard Zero-Forcing (applies H⁺ after noise)
+        # - DECOUPLE_ANTENNAS: Francisco's preprocessing (channel eliminated before noise in training)
+        # Both require H⁺ equalization during detection for consistency
 
         # ==========================================
         # DL Detector 1: One-Hot Encoding
         # ==========================================
         if models[0] is not None:
-            idx_dl1 = dl_detector_onehot(models[0], r, device, H_inv_fixed, USE_ZF)
+            idx_dl1 = dl_detector_onehot(models[0], r, device, H_inv_current, USE_ZF, DECOUPLE_ANTENNAS)
             if idx_dl1 != idx_sel:
                 bit_errors_dl1 += count_bit_errors(idx_sel - 1, idx_dl1 - 1)
 
@@ -657,15 +728,15 @@ for j, SNR_j in snr_pbar:
         # DL Detector 2: Label Encoding
         # ==========================================
         if models[1] is not None:
-            idx_dl2 = dl_detector_label_encoder(models[1], r, idx_sign, device, H_inv_fixed, USE_ZF)
+            idx_dl2 = dl_detector_label_encoder(models[1], r, idx_sign, device, H_inv_current, USE_ZF, DECOUPLE_ANTENNAS)
             if idx_dl2 != idx_sel:
                 bit_errors_dl2 += count_bit_errors(idx_sel - 1, idx_dl2 - 1)
 
         # ==========================================
-        # DL Detector 3: One-Hat Per Antenna
+        # DL Detector 3: One-Hot Per Antenna
         # ==========================================
         if models[2] is not None:
-            idx_dl3 = dl_detector_onehot_per_antenna(models[2], r, symbol_indices, device, H_inv_fixed, USE_ZF)
+            idx_dl3 = dl_detector_onehot_per_antenna(models[2], r, symbol_indices, device, H_inv_current, USE_ZF, DECOUPLE_ANTENNAS)
             if idx_dl3 != idx_sel:
                 bit_errors_dl3 += count_bit_errors(idx_sel - 1, idx_dl3 - 1)
 
@@ -756,12 +827,11 @@ for j, SNR_j in snr_pbar:
         SNR_time = SNR_time[:j+1]
         break
 
-    # Initialize plot after first SNR point (avoid blank window)
+    # Initialize plot after first SNR point
     if fig is None:
         fig, ax = plt.subplots(figsize=(12, 8))
-        plt.show(block=False)
 
-    # Update plot in real-time after each SNR point
+    # Update plot after each SNR point and save to file
     ax.clear()
 
     # Plot only the points calculated so far
@@ -815,7 +885,13 @@ for j, SNR_j in snr_pbar:
             bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
 
     plt.tight_layout()
-    plt.pause(0.001)  # Non-blocking update with minimal pause for interaction
+
+    # Save updated plot to file (can be viewed/refreshed externally)
+    fig.savefig('BER_MIMO_2x2_4QAM_progress.png', dpi=150, bbox_inches='tight')
+
+    # Print progress message
+    if (j+1) % 5 == 0 or j == 0:
+        print(f"\n[Plot updated] BER_MIMO_2x2_4QAM_progress.png saved with {j+1}/{len(SNR_dB)} SNR points")
 
 # Calculate throughput metrics
 end_time_simulation = time.time()
@@ -830,9 +906,6 @@ print(f"  Total Detections:  {total_detections:,}")
 print(f"  Total Time:        {total_time_seconds:.2f} seconds ({total_time_seconds/3600:.2f} hours)")
 print(f"  Throughput:        {throughput_total:,.0f} detections/second ({throughput_total/1000:.1f} K det/s)")
 print("="*70)
-
-# Turn off interactive mode
-plt.ioff()
 
 """## 9. Display BER Results Table"""
 
@@ -921,7 +994,8 @@ ax.legend(loc='best', fontsize=12, framealpha=0.9)
 
 plt.tight_layout()
 
-output_filename = 'BER_MIMO_2x2_4QAM.png'
+# Use filename from config
+output_filename = RESULTS_PLOT_PATH
 
 fig.savefig(output_filename, dpi=300, bbox_inches='tight')
 plt.show()
@@ -1093,11 +1167,11 @@ results = {
     'modulation': f'{M}-QAM'
 }
 
-# Save as numpy file
-np.save('BER_results_MIMO_2x2.npy', results)
+# Save as numpy file (using path from config)
+np.save(RESULTS_PATH, results)
 
-# Also save as text file for easy inspection
-with open('BER_results_MIMO_2x2.txt', 'w') as f:
+# Also save as text file for easy inspection (using path from config)
+with open(RESULTS_TXT_PATH, 'w') as f:
     f.write("BER Results - MIMO 2x2 with 4-QAM\n")
     f.write("="*95 + "\n")
     f.write(f"Monte Carlo Iterations: {n_iter:,}\n")
@@ -1115,10 +1189,15 @@ with open('BER_results_MIMO_2x2.txt', 'w') as f:
         f.write(f"{BER_DL3[i] if not np.isnan(BER_DL3[i]) else 0:<15.6e} ")
         f.write(f"{SNR_time[i]:<12.2f}\n")
 
-print("Results saved to:")
-print("  - BER_results_MIMO_2x2.npy")
-print("  - BER_results_MIMO_2x2.txt")
-print("  - BER_MIMO_2x2_4QAM.png")
+# Clean up progress file (no longer needed)
+import os
+if os.path.exists('BER_MIMO_2x2_4QAM_progress.png'):
+    os.remove('BER_MIMO_2x2_4QAM_progress.png')
+
+print("\nResults saved to:")
+print(f"  - {RESULTS_PATH} (NumPy data)")
+print(f"  - {RESULTS_TXT_PATH} (Text summary)")
+print(f"  - {RESULTS_PLOT_PATH} (Final plot)")
 
 """## 13. Summary and Conclusions
 

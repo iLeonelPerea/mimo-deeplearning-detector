@@ -572,53 +572,53 @@ Our implementation **reproduces these results** and provides:
 
 ---
 
-## Interactive Visualization
+## Progress Monitoring
 
-### Real-Time Plot Updates
+### Non-Interactive Plot Updates (v2.2.0)
 
-**Version 2.1.0** introduces **interactive real-time plotting** that allows user interaction during simulation.
+**Version 2.2.0** implements **file-based progress monitoring** to avoid GUI blocking issues.
 
 #### Problem Solved
 
-**Before (v2.0):**
-- Plot updates after each SNR point
-- Window **freezes** during updates
-- Cannot zoom, pan, or interact while running
-- User must wait until simulation completes
+**Previous versions (v2.0-2.1):**
+- Interactive plotting with `plt.ion()` + `plt.pause()`
+- Window could **freeze** or become unresponsive
+- Issues with remote sessions and headless environments
+- Cannot interact with plot during simulation
 
-**After (v2.1):**
+**Current approach (v2.2):**
 ```python
-import matplotlib
-matplotlib.use('TkAgg')  # Non-blocking backend
+plt.ioff()  # Non-interactive mode
 
-# Update loop
-plt.pause(0.001)  # Minimal pause, allows user interaction
+# After each SNR point
+fig.savefig('BER_MIMO_2x2_4QAM_progress.png', dpi=150, bbox_inches='tight')
 ```
 
 **Benefits:**
-- ✅ Real-time BER curve updates
-- ✅ **User can zoom/pan during simulation**
-- ✅ No window freezing
-- ✅ Responsive matplotlib controls
+- ✅ No GUI blocking or freezing
+- ✅ Works in remote/headless environments
+- ✅ Can view/refresh progress anytime
+- ✅ Stable and reliable execution
+- ✅ Auto-cleanup when complete
 
-#### How to Use
+#### How to Monitor Progress
 
 While simulation is running:
-1. **Zoom**: Use matplotlib zoom tool or scroll wheel
-2. **Pan**: Click and drag to move view
-3. **Reset**: Home button to reset view
-4. **Save**: Save current view as image
+1. Open `BER_MIMO_2x2_4QAM_progress.png` in your image viewer
+2. Refresh the image to see latest results
+3. Progress updated after each SNR point
+4. File automatically deleted when simulation completes
 
-**Example Use Case:**
+**Status messages:**
 ```
-Iteration 50K/1M at SNR=12dB
-↓
-Notice interesting behavior in 10-12 dB range
-↓
-Zoom into that region while simulation continues
-↓
-Take screenshot for analysis
+[Plot updated] BER_MIMO_2x2_4QAM_progress.png saved with 5/21 SNR points
+[Plot updated] BER_MIMO_2x2_4QAM_progress.png saved with 10/21 SNR points
 ```
+
+**Final outputs:**
+- `BER_MIMO_2x2_4QAM.png` - Final BER plot
+- `BER_results_MIMO_2x2.npy` - NumPy data
+- `BER_results_MIMO_2x2.txt` - Text summary
 
 ### Progress Bar Layout
 
